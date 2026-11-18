@@ -65,6 +65,12 @@ source](https://github.com/utmapp/UTM) describes an open-source QEMU front end
 with ARM64 and TCG support, but also exposes HVF; a test must record which
 accelerator is used and the applicable Apple terms.
 
+Apple's [Virtualization framework documentation](https://developer.apple.com/documentation/virtualization)
+describes macOS and Linux guests, not Windows. It does not establish a supported
+Windows 11 ARM guest path or DirectX-capable graphics on macOS 28. This is a
+documentation gap, not proof that the framework cannot boot Windows; a candidate
+would still need an actual guest and graphics test.
+
 The [UTM Windows guest graphics guide](https://docs.getutm.app/guest-support/windows/)
 documents experimental accelerated DirectX graphics for Windows 11 guests
 using its QEMU backend, while warning that game compatibility is limited and
@@ -97,6 +103,20 @@ says Windows 11 can emulate x86 and x64 user-mode apps, but this migration
 specifically targets the native ARM client, not an x64-emulation substitute.
 A native ARM package must be verified from an official Microsoft source before
 claiming the requested client exists or changing the downloader.
+
+**Feasibility result (November 18, 2026):** no complete implementation is
+supported by the evidence above. The current prepared-game check requires the
+AMD64 machine type and labels the result `prepared_windows_x64_game`; Windows
+ARM's documented x64 emulation does not meet the native-client requirement.
+Apple's framework overview does not document Windows guests, and UTM's
+DirectX-on-Windows path is explicitly experimental and has not been shown here
+to run this game. The official sources reviewed do not verify a native ARM64
+Minecraft for Windows package, Windows guest graphics, or vanilla gameplay on
+macOS 28. These are unverified prerequisites, not proof that Microsoft has no
+such package or that a VM route is impossible. Do not add a VM launcher,
+change the AMD64 package acceptance, or claim macOS 28 support until those
+prerequisites and real gameplay are validated. The existing macOS 27
+Wine/Rosetta path remains unchanged; no speculative VM scaffolding is added.
 
 Before implementation, establish that a user-supplied, licensed Windows 11 ARM
 guest can be run with only permitted OSS components, identify a native ARM64
