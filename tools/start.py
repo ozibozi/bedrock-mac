@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 
 ROOT = Path(__file__).resolve().parents[1]
 STAGE_NAMES = ('wine', 'graphics', 'helper', 'probes', 'bridge')
@@ -74,8 +75,29 @@ class SetupReporter:
     """Render truthful, optionally colorful stage progress for an interactive terminal."""
 
     MAX_ROWS = 4
+    MIN_PANEL_WIDTH = 16
     CONTEXT_LINES = 3
     MAX_DETAIL_LENGTH = 240
+    CREEPER_UNICODE = (
+        '🟩🟩🟩🟩🟩🟩🟩🟩',
+        '🟩⬛⬛🟩🟩⬛⬛🟩',
+        '🟩⬛⬛🟩🟩⬛⬛🟩',
+        '🟩🟩🟩⬛⬛🟩🟩🟩',
+        '🟩🟩⬛⬛⬛⬛🟩🟩',
+        '🟩🟩⬛⬛⬛⬛🟩🟩',
+        '🟩🟩⬛🟩🟩⬛🟩🟩',
+        '🟩🟩🟩🟩🟩🟩🟩🟩',
+    )
+    CREEPER_ASCII = (
+        '########',
+        '#  ##  #',
+        '#  ##  #',
+        '###  ###',
+        '##    ##',
+        '##    ##',
+        '## ## ##',
+        '########',
+    )
 
     def __init__(self, stream=None, *, fun_facts=False, environment=None):
         self.stream = sys.stdout if stream is None else stream
@@ -87,7 +109,18 @@ class SetupReporter:
         self.tty = bool(is_tty and environment.get('TERM') != 'dumb')
         self.color = bool(self.tty and not environment.get('NO_COLOR')
                           and environment.get('CLICOLOR') != '0')
-        self.terminal_width = min(140, shutil.get_terminal_size((100, 24)).columns)
+        encoding = getattr(self.stream, 'encoding', None) or 'utf-8'
+        try:
+            for line in self.CREEPER_UNICODE:
+                line.encode(encoding)
+            self.unicode_creeper = self.color
+        except (LookupError, UnicodeEncodeError):
+            self.unicode_creeper = False
+        self.terminal_width = max(
+            self.MIN_PANEL_WIDTH, min(140, shutil.get_terminal_size((100, 24)).columns))
+        unicode_prefix_width = self.display_width('  ' + self.CREEPER_UNICODE[0] + '   | ')
+        if self.unicode_creeper and self.terminal_width < unicode_prefix_width:
+            self.unicode_creeper = False
         self.fun_facts = fun_facts
         self.fact_index = 0
         self.last_fact_elapsed = 0
@@ -100,6 +133,7 @@ class SetupReporter:
         self.percent = None
         self.recent_output = []
         self.panel_rows = 0
+        self.screen_initialized = False
         self.non_tty_buckets = {}
         self.last_non_tty_update = 0
         self.stage_started = time.monotonic()
@@ -109,8 +143,29 @@ class SetupReporter:
             return text
         return f'\033[{color}m{text}\033[0m'
 
+    @staticmethod
+    def display_width(text):
+        text = ANSI_ESCAPE.sub('', text)
+        return sum(2 if unicodedata.east_asian_width(character) in ('W', 'F') else 1
+                   for character in text)
+
+    @staticmethod
+    def clip_display(text, width):
+        clipped = []
+        used = 0
+        for character in text:
+            character_width = (
+                2 if unicodedata.east_asian_width(character) in ('W', 'F') else 1)
+            if used + character_width > width:
+                break
+            clipped.append(character)
+            used += character_width
+        return ''.join(clipped)
+
     def begin(self, label):
-        self.clear_panel()
+        if self.tty and not self.screen_initialized:
+            self.stream.write('\033[2J\033[H')
+            self.screen_initialized = True
         self.tasks.clear()
         self.current_download = None
         self.stage_label = {
@@ -127,23 +182,31 @@ class SetupReporter:
         }.get(label, label)
         self.detail = 'Working'
         self.percent = None
-        self.recent_output.clear()
+        details = STAGE_DETAILS.get(label)
+        self.recent_output[:] = [details] if details else []
         self.non_tty_buckets.clear()
         self.last_non_tty_update = 0
         self.stage_started = time.monotonic()
-        self.stream.write('\n' + self.paint(label, '1;36') + '\n')
-        details = STAGE_DETAILS.get(label)
-        if details:
-            self.stream.write('  ' + details + '\n')
-        self.stream.flush()
+        if self.tty:
+            self.render_progress(0)
+        else:
+            self.stream.write('\n' + label + '\n')
+            if details:
+                self.stream.write('  ' + details + '\n')
+            self.stream.flush()
         if self.fun_facts and self.fact_index == 0:
             self.fact()
 
     def fact(self):
-        self.stream.write('  ' + self.paint('Fun fact: ', '1;35')
-                          + FUN_FACTS[self.fact_index % len(FUN_FACTS)] + '\n')
+        text = 'Fun fact: ' + FUN_FACTS[self.fact_index % len(FUN_FACTS)]
         self.fact_index += 1
-        self.stream.flush()
+        if self.tty:
+            self.recent_output.append(text)
+            self.recent_output = self.recent_output[-self.CONTEXT_LINES:]
+            self.render_progress(int(time.monotonic() - self.stage_started))
+        else:
+            self.stream.write('  ' + text + '\n')
+            self.stream.flush()
 
     def clear_panel(self):
         if not self.tty or not self.panel_rows:
@@ -183,47 +246,34 @@ class SetupReporter:
             self.non_tty_update('stage', self.percent)
 
     def render_progress(self, elapsed):
-        tasks = list(self.tasks.values())[-self.MAX_ROWS:]
-        if not tasks:
-            tasks = [{'name': self.stage_label, 'status': self.detail, 'percent': self.percent}]
+        percent = self.percent
+        if percent is None:
+            self.spinner_index += 1
+            percent_text = '--%'
+        else:
+            percent_text = f'{round(percent)}%'
+
+        elapsed_text = f'{elapsed // 60:02}:{elapsed % 60:02}'
+        art = self.CREEPER_UNICODE if self.unicode_creeper else self.CREEPER_ASCII
+        recent = self.recent_output[-self.CONTEXT_LINES:]
+        details = [self.stage_label + ' | ' + elapsed_text + ' | ' + percent_text]
+        details.extend(recent or [self.detail])
+        details = details[:len(art)]
         rows = []
-        for task in tasks:
-            percent = task['percent']
-            if percent is None:
-                eyes = 'O' if self.spinner_index % 2 else 'o'
-                self.spinner_index += 1
-                face = f'|{eyes} {eyes}|'
-                mouth = '|---|'
-                percent_text = ' --%'
-            else:
-                filled = round(3 * percent / 100)
-                face = '|o o|'
-                mouth = '|' + '#' * filled + '-' * (3 - filled) + '|'
-                percent_text = f'{round(percent):3}%'
-            elapsed_text = f'{elapsed // 60:02}:{elapsed % 60:02}'
-            name_width = max(1, self.terminal_width - (2 + len(face) + 1
-                                                       + len(percent_text) + 3 + 3
-                                                       + len(elapsed_text)))
-            name = task['name'][:name_width]
-            row = (f'  {self.paint(face, "36")} {percent_text} | '
-                   f'{name} | {elapsed_text}')
-            visible_width = len(ANSI_ESCAPE.sub('', row))
-            rows.append(row + ' ' * max(0, self.terminal_width - visible_width))
-            mouth_row = '  ' + self.paint(mouth, '36')
-            rows.append(mouth_row + ' ' * max(
-                0, self.terminal_width - len(ANSI_ESCAPE.sub('', mouth_row))))
-        details = self.recent_output[-self.CONTEXT_LINES:] or [self.detail]
-        detail_width = max(1, self.terminal_width - 4)
-        rows.extend(('    ' + line[:detail_width])[:self.terminal_width].ljust(self.terminal_width)
-                    for line in details)
-        old_rows = self.panel_rows
-        target_rows = max(old_rows, len(rows))
-        if old_rows:
-            self.stream.write(f'\033[{old_rows}A')
-        for index in range(target_rows):
-            line = rows[index] if index < len(rows) else ''
-            self.stream.write('\r\033[K' + line + '\n')
-        self.panel_rows = target_rows
+        for index, drawing in enumerate(art):
+            left = '  ' + (drawing if self.unicode_creeper else self.paint(drawing, '1;32'))
+            prefix = left + '   | '
+            detail = details[index] if index < len(details) else ''
+            detail_width = max(0, self.terminal_width - self.display_width(prefix))
+            row = prefix + self.clip_display(detail, detail_width)
+            rows.append(row + ' ' * max(
+                0, self.terminal_width - self.display_width(row)))
+
+        if self.panel_rows:
+            self.stream.write(f'\033[{self.panel_rows}A')
+        for row in rows:
+            self.stream.write('\r\033[K' + row + '\n')
+        self.panel_rows = len(rows)
         self.stream.flush()
 
     def non_tty_update(self, key, percent):
@@ -246,6 +296,10 @@ class SetupReporter:
         self.stream.flush()
 
     def event(self, text, *, success=False, failed=False):
+        if self.tty:
+            status = ('FAILED: ' if failed else '') + text
+            self.update_stage(status[:self.MAX_DETAIL_LENGTH])
+            return
         self.clear_panel()
         marker, color = ('!', '1;31') if failed else (
             ('✓', '1;32') if success else ('↻', '1;33'))
@@ -277,13 +331,20 @@ class SetupReporter:
                 self.current_download = None
                 self.stage_label = 'Native dependencies'
                 self.percent = None
+                self.recent_output = [
+                    'Preparing source builds',
+                    'Reused verified archive: ' + archive_event.group(1).lower(),
+                ]
                 self.update_stage('Preparing source builds', include_context=False)
+                return
             elif 'Verified dependency prefix' in text:
                 self.percent = None
                 self.detail = 'Verified'
                 self.tasks.clear()
                 self.current_download = None
-            self.event(text, success=True)
+                self.update_stage('Verified', include_context=False)
+                return
+            self.update_stage(text[:self.MAX_DETAIL_LENGTH])
             return
         if CURL_PROGRESS.match(text):
             if self.current_download:
@@ -328,8 +389,6 @@ class SetupReporter:
         total_elapsed = int(time.monotonic() - self.started)
         if self.fun_facts and total_elapsed - self.last_fact_elapsed >= 300:
             self.last_fact_elapsed = total_elapsed
-            if self.tty:
-                self.clear_panel()
             self.fact()
         if self.tty:
             self.render_progress(elapsed)
@@ -339,12 +398,18 @@ class SetupReporter:
                   file=self.stream, flush=True)
 
     def finish(self, result):
+        if self.tty:
+            if result:
+                self.update_stage(result)
+            return
         self.clear_panel()
         if result:
             self.stream.write('  ' + self.paint(result, '1;32' if result == 'Complete' else '1;33') + '\n')
         self.stream.flush()
 
     def intro(self, log_directory):
+        if self.tty:
+            return
         self.stream.write('First setup builds Wine and downloads required components and your game. '
                           'You can resume if interrupted.\n')
         self.stream.write('Logs: ' + str(log_directory) + '\n')
@@ -436,15 +501,18 @@ def native_dependencies(python, jobs):
         prefix = attempt / 'prefix'
         if os.path.lexists(prefix / 'dependency-manifest.json'):
             dependencies.verify(prefix)
-            print('Native source dependencies — already verified.', flush=True)
+            reporter = setup_reporter()
+            message = 'Native source dependencies — already verified.'
+            if reporter.tty:
+                reporter.begin('Building native source dependencies')
+                reporter.update_stage('Already verified')
+            else:
+                print(message, flush=True)
             return prefix
     # The builder refuses existing compiled outputs. A retry gets one fresh
     # attempt, while earlier source, archives and diagnostics remain available.
     attempt = Path(tempfile.mkdtemp(prefix='attempt-', dir=directory))
     cache = directory / 'download-cache'
-    if cache.exists():
-        print('Checking the persistent source-download cache; every reused archive is SHA-256 verified.',
-              flush=True)
     run([python, str(ROOT / 'tools/build-native-dependencies.py'), '--destination', str(attempt),
          '--cache-dir', str(cache), '--jobs', str(min(jobs, 8)), '--live-output'],
         'Building native source dependencies',
@@ -561,7 +629,12 @@ class Steps:
             try:
                 current = {p: digest(ROOT / p) for p in outputs}
                 if current == receipt.get('outputs'):
-                    print(label + ' — already done.', flush=True)
+                    reporter = setup_reporter()
+                    if reporter.tty:
+                        reporter.begin(label)
+                        reporter.update_stage('Already done')
+                    else:
+                        print(label + ' — already done.', flush=True)
                     self.previous = signature
                     return
             except OSError:
@@ -740,10 +813,20 @@ def cli():
     try:
         return main()
     except KeyboardInterrupt:
-        print('\nStopped. Open Start.command again to retry.', file=sys.stderr)
+        reporter = setup_reporter()
+        message = 'Stopped. Open Start.command again to retry.'
+        if reporter.tty and reporter.panel_rows:
+            reporter.event(message)
+        else:
+            print('\n' + message, file=sys.stderr)
         return 130
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
-        print('Start: ' + str(error), file=sys.stderr)
+        reporter = setup_reporter()
+        message = 'Start: ' + str(error)
+        if reporter.tty and reporter.panel_rows:
+            reporter.event(message, failed=True)
+        else:
+            print(message, file=sys.stderr)
         return 1
 
 

@@ -348,6 +348,26 @@ sys.exit(start.cli())
         self.assertIn('Start: fixture setup failure', error.getvalue())
         self.assertNotIn('Traceback', error.getvalue())
 
+    def test_cli_keeps_handled_tty_failure_inside_eight_line_panel(self):
+        class TTYCapture(io.StringIO):
+            def isatty(self):
+                return True
+
+        output = TTYCapture()
+        reporter = start.SetupReporter(output, environment={'TERM': 'xterm-256color'})
+        reporter.begin('Building the Windows compatibility runtime')
+        with patch.object(start, 'REPORTER', reporter), \
+                patch.object(start, 'main', side_effect=RuntimeError('fixture setup failure')), \
+                contextlib.redirect_stdout(output), \
+                contextlib.redirect_stderr(io.StringIO()) as error:
+            self.assertEqual(start.cli(), 1)
+
+        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[8A', 1)[-1])
+        rows = [line for line in frame.splitlines() if line.strip()]
+        self.assertEqual(len(rows), 8)
+        self.assertIn('Start: fixture setup failure', output.getvalue())
+        self.assertEqual(error.getvalue(), '')
+
     def dependency_inputs(self):
         for name in ('tools/build-native-dependencies.py', 'config/native-dependencies.lock.json'):
             (self.root / name).write_text(name)
@@ -528,6 +548,8 @@ sys.exit(start.cli())
 
         output = TTYCapture()
         reporter = start.SetupReporter(output, environment={'TERM': 'xterm-256color'})
+        reporter.intro('/private/setup/logs')
+        self.assertEqual(output.getvalue(), '')
         reporter.begin('Building native source dependencies')
         reporter.output_line(b'Downloading source archive: gmp')
         reporter.output_line(b'################################ 42.6%')
@@ -535,20 +557,44 @@ sys.exit(start.cli())
         reporter.output_line(b'config.status: linking mpn/x86_64')
         reporter.progress(12)
         rendered = output.getvalue()
-        self.assertIn('\033[1;36m', rendered)
-        frame = rendered.rsplit('\033[3A', 1)[-1]
+        self.assertIn('\033[2J\033[H', rendered)
+        frame = rendered.rsplit('\033[8A', 1)[-1]
         frame = start.ANSI_ESCAPE.sub('', frame)
         rows = [line for line in frame.splitlines() if line.strip()]
-        self.assertEqual(len(rows), 3)
-        self.assertEqual(len({len(row) for row in rows}), 1)
-        self.assertLessEqual(len(rows[0]), reporter.terminal_width)
-        self.assertIn('Building GMP', rows[0])
-        self.assertIn('|o o|', rows[0])
-        self.assertIn('|---|', rows[1])
-        self.assertIn('config.status: linking mpn/x86_64', rows[-1])
+        self.assertEqual(len(rows), 8)
+        self.assertEqual(len({reporter.display_width(row) for row in rows}), 1)
+        self.assertTrue(all(reporter.display_width(row) <= reporter.terminal_width for row in rows))
+        self.assertEqual(rows[0].split('   | ', 1)[0].strip(), reporter.CREEPER_UNICODE[0])
+        self.assertIn('Building GMP', rows[0].split('   | ', 1)[1])
+        self.assertIn('config.status: linking mpn/x86_64', rows[1].split('   | ', 1)[1])
+        self.assertEqual(tuple(row.split('   | ', 1)[0].strip() for row in rows),
+                         reporter.CREEPER_UNICODE)
+        self.assertIn('🟩', rendered)
+        self.assertEqual(rendered.count('\033[2J'), 1)
         self.assertEqual(reporter.stage_label, 'Building GMP')
         self.assertNotIn('################################', frame)
+        self.assertNotIn('Building native source dependencies\n', frame)
         reporter.finish('')
+
+    def test_stage_changes_reuse_eight_line_panel_without_heading(self):
+        class TTYCapture(io.StringIO):
+            def isatty(self):
+                return True
+
+        output = TTYCapture()
+        reporter = start.SetupReporter(output, environment={'TERM': 'xterm-256color'})
+        reporter.begin('Building native source dependencies')
+        reporter.begin('Building the Windows compatibility runtime')
+
+        self.assertEqual(reporter.panel_rows, 8)
+        self.assertEqual(output.getvalue().count('\033[2J'), 1)
+        self.assertNotIn('\nBuilding the Windows compatibility runtime\n',
+                         output.getvalue())
+        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[8A', 1)[-1])
+        rows = [line for line in frame.splitlines() if line.strip()]
+        self.assertEqual(len(rows), 8)
+        self.assertIn('Wine runtime', rows[0])
+        self.assertIn('Applies WineGDK patches', rows[1])
 
     def test_compiler_fragments_never_become_task_labels(self):
         examples = (
@@ -609,13 +655,13 @@ sys.exit(start.cli())
             'CC libgnu_gpl_la-error.lo',
             'config.status: linking x86_64/ec',
         ])
-        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[5A', 1)[-1])
+        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[8A', 1)[-1])
         rows = [line for line in frame.splitlines() if line.strip()]
+        self.assertEqual(len(rows), 8)
         self.assertIn('Building libunistring', rows[0])
-        self.assertEqual(len(rows), 5)
-        self.assertTrue(all(len(line) <= reporter.terminal_width for line in rows))
-        self.assertIn('GEN error.h', frame)
-        self.assertIn('config.status: linking x86_64/ec', frame)
+        self.assertIn('CC libgnu_gpl_la-error.lo', rows[2])
+        self.assertIn('config.status: linking x86_64/ec', rows[3])
+        self.assertTrue(all(reporter.display_width(line) <= reporter.terminal_width for line in rows))
         self.assertNotIn('ordinary noisy output', frame)
 
     def test_progress_context_clips_details_to_terminal_width(self):
@@ -624,17 +670,35 @@ sys.exit(start.cli())
                 return True
 
         output = TTYCapture()
-        with patch.object(start.shutil, 'get_terminal_size', return_value=os.terminal_size((76, 24))):
+        with patch.object(start.shutil, 'get_terminal_size', return_value=os.terminal_size((30, 24))):
             reporter = start.SetupReporter(output, environment={'TERM': 'xterm-256color'})
         reporter.begin('Building native source dependencies')
         reporter.output_line(b'Building dependency: libunistring')
         reporter.output_line(('CC ' + 'x' * 300).encode())
         reporter.progress(60)
-        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[3A', 1)[-1])
+        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[8A', 1)[-1])
         rows = [line for line in frame.splitlines() if line.strip()]
-        self.assertIn('Building libunistring', rows[0])
-        self.assertLessEqual(len(rows[-1]), 76)
-        self.assertLess(len(rows[-1]), 100)
+        self.assertEqual(len(rows), 8)
+        self.assertTrue(all(reporter.display_width(line) <= 30 for line in rows))
+        self.assertIn('Build', rows[0])
+        self.assertNotIn('ordinary noisy output', frame)
+
+    def test_narrow_terminal_falls_back_to_compact_creeper(self):
+        class TTYCapture(io.StringIO):
+            def isatty(self):
+                return True
+
+        output = TTYCapture()
+        with patch.object(start.shutil, 'get_terminal_size', return_value=os.terminal_size((20, 24))):
+            reporter = start.SetupReporter(output, environment={'TERM': 'xterm-256color'})
+        reporter.begin('Building native source dependencies')
+
+        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[8A', 1)[-1])
+        rows = [line for line in frame.splitlines() if line.strip()]
+        self.assertFalse(reporter.unicode_creeper)
+        self.assertEqual(len(rows), 8)
+        self.assertTrue(all(reporter.display_width(line) == 20 for line in rows))
+        self.assertIn('########', rows[0])
 
     def test_creeper_indicator_uses_known_download_progress(self):
         class TTYCapture(io.StringIO):
@@ -648,9 +712,13 @@ sys.exit(start.cli())
         reporter.output_line(b'################################ 42.6%')
         reporter.progress(10)
 
-        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[3A', 1)[-1])
-        self.assertIn('|o o|  43% | Downloading FreeType', frame)
-        self.assertIn('|#--|', frame)
+        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[8A', 1)[-1])
+        rows = [line for line in frame.splitlines() if line.strip()]
+        self.assertEqual(len(rows), 8)
+        self.assertIn('Downloading FreeType', rows[0].split('   | ', 1)[1])
+        self.assertEqual(tuple(row.split('   | ', 1)[0].strip() for row in rows),
+                         reporter.CREEPER_UNICODE)
+        self.assertIn('43%', rows[0].split('   | ', 1)[1])
 
     def test_autoconf_probe_exclamation_is_detail_not_a_failure_event(self):
         class TTYCapture(io.StringIO):
@@ -700,7 +768,8 @@ sys.exit(start.cli())
                 self.assertRaisesRegex(RuntimeError, 'failed; see the setup log'):
             start.run(['build'], 'Building the Windows compatibility runtime', log)
 
-        self.assertIn('\033[1;31m!\033[0m', output.getvalue())
+        self.assertIn('FAILED: Building the Windows compatibility runtime failed',
+                      output.getvalue())
         self.assertIn('failed; see the setup log', output.getvalue())
 
     def test_completed_archive_event_clears_live_download_row(self):
@@ -720,8 +789,9 @@ sys.exit(start.cli())
         self.assertEqual(reporter.tasks['stage']['status'], 'Preparing source builds')
         reporter.progress(199)
         self.assertNotIn('97%', output.getvalue().split('\r')[-1])
-        self.assertIn(reporter.paint('✓', '1;32') + ' Reusing verified source archive: freetype',
-                      output.getvalue())
+        self.assertIn('Reused verified archive: freetype', output.getvalue())
+        self.assertNotIn('✓ Reusing verified source archive', output.getvalue())
+        self.assertEqual(reporter.panel_rows, 8)
 
     def test_non_tty_download_updates_are_throttled_to_coarse_milestones(self):
         output = io.StringIO()
@@ -752,8 +822,24 @@ sys.exit(start.cli())
         reporter.finish('Complete')
         self.assertNotRegex(output.getvalue(), r'\x1b\[[0-9;]*m')
         self.assertIn('Fun fact:', output.getvalue())
-        self.assertIn('|o o|', output.getvalue())
-        self.assertIn('|---|', output.getvalue())
+        self.assertIn('########', output.getvalue())
+        self.assertNotIn('🟩', output.getvalue())
+
+    def test_ascii_only_tty_uses_readable_creeper_fallback(self):
+        class ASCIITTY(io.StringIO):
+            encoding = 'ascii'
+
+            def isatty(self):
+                return True
+
+        output = ASCIITTY()
+        reporter = start.SetupReporter(output, environment={'TERM': 'xterm-256color'})
+        reporter.begin('Building native source dependencies')
+
+        self.assertFalse(reporter.unicode_creeper)
+        self.assertIn('########', output.getvalue())
+        self.assertNotIn('🟩', output.getvalue())
+        self.assertEqual(reporter.panel_rows, 8)
 
     def test_source_update_refreshes_generated_helper_before_existing_tree_verification(self):
         source = Path(__file__).resolve().parents[1]
