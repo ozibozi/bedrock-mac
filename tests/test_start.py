@@ -368,6 +368,36 @@ sys.exit(start.cli())
         self.assertIn('Start: fixture setup failure', output.getvalue())
         self.assertEqual(error.getvalue(), '')
 
+    def test_cli_does_not_repeat_a_child_failure_already_reported(self):
+        class TTYCapture(io.StringIO):
+            def isatty(self):
+                return True
+
+        output = TTYCapture()
+        reporter = start.SetupReporter(output, environment={'TERM': 'xterm-256color'})
+        reporter.begin('Building Microsoft sign-in')
+        reporter.event('Building Microsoft sign-in failed; see the setup log.',
+                       failed=True, cause='Setup: close game/helper normally.', log=self.root / 'helper.log')
+        with patch.object(start, 'REPORTER', reporter), \
+                patch.object(start, 'main', side_effect=RuntimeError('already reported')), \
+                contextlib.redirect_stdout(output), \
+                contextlib.redirect_stderr(io.StringIO()) as error:
+            self.assertEqual(start.cli(), 1)
+
+        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[8A', 1)[-1])
+        rows = [line for line in frame.splitlines() if line.strip()]
+        self.assertEqual(len(rows), 8)
+        self.assertEqual(frame.count('FAILED'), 1)
+        self.assertNotIn('Start: already reported', output.getvalue())
+        self.assertEqual(error.getvalue(), '')
+
+    def test_failure_summary_redacts_secret_bearing_log_lines(self):
+        log = self.root / 'logs/failure.log'
+        log.parent.mkdir(parents=True)
+        log.write_text('Setup: Could not continue; access_token=private-value\n')
+
+        self.assertIsNone(start.safe_failure_summary(log))
+
     def dependency_inputs(self):
         for name in ('tools/build-native-dependencies.py', 'config/native-dependencies.lock.json'):
             (self.root / name).write_text(name)
@@ -576,6 +606,22 @@ sys.exit(start.cli())
         self.assertNotIn('Building native source dependencies\n', frame)
         reporter.finish('')
 
+    def test_completed_build_stage_replaces_unknown_progress_status(self):
+        class TTYCapture(io.StringIO):
+            def isatty(self):
+                return True
+
+        output = TTYCapture()
+        with patch.object(start.subprocess, 'run') as command, \
+                contextlib.redirect_stdout(output):
+            start.run(['/bin/true'], 'Preparing build tools')
+
+        command.assert_called_once()
+        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[8A', 1)[-1])
+        self.assertIn('Preparing build tools | 00:00 | Complete', frame)
+        self.assertNotIn('--%', frame)
+        self.assertNotIn('Working', frame)
+
     def test_stage_changes_reuse_eight_line_panel_without_heading(self):
         class TTYCapture(io.StringIO):
             def isatty(self):
@@ -739,7 +785,7 @@ sys.exit(start.cli())
 
     def test_nonzero_process_exit_is_reported_as_failure(self):
         read_fd, write_fd = os.pipe()
-        os.write(write_fd, b'! checking if we should use a .note.GNU-stack section...\n')
+        os.write(write_fd, b'Setup: Close the standalone game and its account helper before rebuilding that helper.\n')
         os.close(write_fd)
 
         class Process:
@@ -768,9 +814,14 @@ sys.exit(start.cli())
                 self.assertRaisesRegex(RuntimeError, 'failed; see the setup log'):
             start.run(['build'], 'Building the Windows compatibility runtime', log)
 
-        self.assertIn('FAILED: Building the Windows compatibility runtime failed',
-                      output.getvalue())
-        self.assertIn('failed; see the setup log', output.getvalue())
+        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[8A', 1)[-1])
+        self.assertIn('Wine runtime | 00:00 | FAILED', frame)
+        self.assertIn('Cause: Setup: Close the standalone game',
+                      frame)
+        self.assertIn('Action: quit the game/helper normally, then retry.', frame)
+        self.assertIn('Full log: logs/failed-build.log', frame)
+        self.assertEqual(frame.count('FAILED'), 1)
+        self.assertNotIn('--%', frame)
 
     def test_completed_archive_event_clears_live_download_row(self):
         class TTYCapture(io.StringIO):

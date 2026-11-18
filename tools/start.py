@@ -137,6 +137,8 @@ class SetupReporter:
         self.non_tty_buckets = {}
         self.last_non_tty_update = 0
         self.stage_started = time.monotonic()
+        self.phase_result = None
+        self.failure_reported = False
 
     def paint(self, text, color):
         if not self.color:
@@ -182,6 +184,8 @@ class SetupReporter:
         }.get(label, label)
         self.detail = 'Working'
         self.percent = None
+        self.phase_result = None
+        self.failure_reported = False
         details = STAGE_DETAILS.get(label)
         self.recent_output[:] = [details] if details else []
         self.non_tty_buckets.clear()
@@ -256,8 +260,12 @@ class SetupReporter:
         elapsed_text = f'{elapsed // 60:02}:{elapsed % 60:02}'
         art = self.CREEPER_UNICODE if self.unicode_creeper else self.CREEPER_ASCII
         recent = self.recent_output[-self.CONTEXT_LINES:]
-        details = [self.stage_label + ' | ' + elapsed_text + ' | ' + percent_text]
-        details.extend(recent or [self.detail])
+        result = self.phase_result or percent_text
+        details = [self.stage_label + ' | ' + elapsed_text + ' | ' + result]
+        if recent:
+            details.extend(recent)
+        elif not self.phase_result and self.detail:
+            details.append(self.detail)
         details = details[:len(art)]
         rows = []
         for index, drawing in enumerate(art):
@@ -265,7 +273,9 @@ class SetupReporter:
             prefix = left + '   | '
             detail = details[index] if index < len(details) else ''
             detail_width = max(0, self.terminal_width - self.display_width(prefix))
-            row = prefix + self.clip_display(detail, detail_width)
+            clipped = self.clip_display(detail, detail_width)
+            color = '1;31' if index == 0 and self.phase_result == 'FAILED' else None
+            row = prefix + (self.paint(clipped, color) if color else clipped)
             rows.append(row + ' ' * max(
                 0, self.terminal_width - self.display_width(row)))
 
@@ -295,15 +305,45 @@ class SetupReporter:
         self.stream.write('  ' + self.paint('›', '1;34') + ' ' + message[:72] + '\n')
         self.stream.flush()
 
-    def event(self, text, *, success=False, failed=False):
+    def event(self, text, *, success=False, failed=False, cause=None, log=None):
+        if failed:
+            self.failure_reported = True
         if self.tty:
-            status = ('FAILED: ' if failed else '') + text
-            self.update_stage(status[:self.MAX_DETAIL_LENGTH])
+            if failed:
+                self.phase_result = 'FAILED'
+                self.recent_output = []
+                if cause:
+                    self.recent_output.append('Cause: ' + cause)
+                    if 'Close the standalone game and its account helper' in cause:
+                        self.recent_output.append(
+                            'Action: quit the game/helper normally, then retry.')
+                else:
+                    self.recent_output.append(text)
+                if log:
+                    try:
+                        log_name = log.relative_to(ROOT).as_posix()
+                    except ValueError:
+                        log_name = log.name
+                    self.recent_output.append('Full log: ' + log_name)
+                self.recent_output = self.recent_output[-self.CONTEXT_LINES:]
+            else:
+                self.recent_output = [text]
+            self.update_stage(text[:self.MAX_DETAIL_LENGTH], include_context=False)
             return
         self.clear_panel()
         marker, color = ('!', '1;31') if failed else (
             ('✓', '1;32') if success else ('↻', '1;33'))
         self.stream.write('  ' + self.paint(marker, color) + ' ' + text[:68] + '\n')
+        if cause:
+            self.stream.write('    Cause: ' + cause[:180] + '\n')
+        if failed:
+            self.stream.write('    Reopen Start.command to retry after resolving the cause.\n')
+        if log:
+            try:
+                log_name = log.relative_to(ROOT).as_posix()
+            except ValueError:
+                log_name = log.name
+            self.stream.write('    Full log: ' + log_name + '\n')
         self.stream.flush()
 
     def output_line(self, raw):
@@ -400,7 +440,9 @@ class SetupReporter:
     def finish(self, result):
         if self.tty:
             if result:
-                self.update_stage(result)
+                self.phase_result = result
+                self.recent_output = []
+                self.update_stage(result, include_context=False)
             return
         self.clear_panel()
         if result:
@@ -421,6 +463,35 @@ def setup_reporter():
     if REPORTER is None or REPORTER.stream is not sys.stdout:
         REPORTER = SetupReporter()
     return REPORTER
+
+
+def safe_failure_summary(log):
+    if log is None:
+        return None
+    try:
+        lines = log.read_bytes()[-256 * 1024:].decode('utf-8', errors='replace').splitlines()
+    except OSError:
+        return None
+    candidates = []
+    for raw in reversed(lines):
+        line = ANSI_ESCAPE.sub('', raw).strip()
+        if not (line.startswith('Setup: ')
+                or re.match(r'(?i)^error(?:\[E\d+\])?:\s+', line)
+                or re.match(r'(?i)^Caused by:\s+', line)):
+            continue
+        if SENSITIVE_OUTPUT.search(line):
+            continue
+        line = line.replace(str(Path.home()), '~').replace(str(ROOT), '$SOURCE')
+        line = re.sub(r'https?://\S+', '<URL>', line)
+        line = re.sub(r'(?i)([A-Za-z0-9_-]*(?:token|secret|password|credential|cookie)[A-Za-z0-9_-]*\s*[:=]\s*)\S+',
+                      r'\1<redacted>', line)
+        line = re.sub(r'\s+', ' ', line)
+        line = line[:180]
+        if line not in candidates:
+            candidates.append(line)
+        if len(candidates) == 2:
+            break
+    return ' '.join(reversed(candidates)) or None
 
 
 def module(name):
@@ -543,7 +614,7 @@ def run(command, label, log=None):
         except BaseException:
             reporter.finish('')
             raise
-        reporter.finish('')
+        reporter.finish('Complete')
         return
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open('ab') as output:
@@ -601,10 +672,11 @@ def run(command, label, log=None):
             selector.close()
             process.stdout.close()
         if code:
-            reporter.event(f'{label} failed; see the setup log.', failed=True)
+            reporter.event(f'{label} failed; see the setup log.', failed=True,
+                           cause=safe_failure_summary(log), log=log)
             reporter.finish('')
             raise RuntimeError(f'{label} failed; see the setup log. Reopen Start.command to retry.')
-    reporter.finish('')
+    reporter.finish('Complete')
 
 
 class Steps:
@@ -823,10 +895,11 @@ def cli():
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
         reporter = setup_reporter()
         message = 'Start: ' + str(error)
-        if reporter.tty and reporter.panel_rows:
-            reporter.event(message, failed=True)
-        else:
-            print(message, file=sys.stderr)
+        if not reporter.failure_reported:
+            if reporter.tty and reporter.panel_rows:
+                reporter.event(message, failed=True)
+            else:
+                print(message, file=sys.stderr)
         return 1
 
 
