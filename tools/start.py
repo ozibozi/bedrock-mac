@@ -20,8 +20,24 @@ STAGE_NAMES = ('wine', 'graphics', 'helper', 'probes', 'bridge')
 
 
 def module(name):
-    directory = 'client' if name in ('standalone', 'standalone-setup', 'standalone-pickers') else 'tools'
+    directory = 'client' if name in ('standalone', 'standalone-setup', 'standalone-pickers',
+                                     'proprietary_consent') else 'tools'
     spec = importlib.util.spec_from_file_location(name.replace('-', '_'), ROOT / directory / (name + '.py'))
+    value = importlib.util.module_from_spec(spec)
+    previous = sys.dont_write_bytecode
+    try:
+        sys.dont_write_bytecode = True
+        spec.loader.exec_module(value)
+    finally:
+        sys.dont_write_bytecode = previous
+    return value
+
+
+def proprietary_consent():
+    source = ROOT / 'client/proprietary_consent.py'
+    spec = importlib.util.spec_from_file_location('bedrock_proprietary_consent', source)
+    if spec is None or spec.loader is None:
+        raise RuntimeError('The proprietary-component acceptance checker is missing.')
     value = importlib.util.module_from_spec(spec)
     previous = sys.dont_write_bytecode
     try:
@@ -43,6 +59,8 @@ def digest(path):
 def installed():
     """Reuse a complete local installation; Start is not a game/runtime updater."""
     try:
+        if not proprietary_consent().acceptance_status(ROOT)[0]:
+            return False
         launcher = module('standalone')
         launcher.prerequisites(ROOT / 'game')
         launcher.verify_unix_bridge()
@@ -202,6 +220,7 @@ def setup(jobs, market):
     if os.environ.get('STANDALONE_DEPENDENCY_PREFIX'):
         dependencies_builder.require_build_path(
             Path(os.environ['STANDALONE_DEPENDENCY_PREFIX']).expanduser(), 'Dependency prefix')
+    proprietary_consent().require_acceptance(ROOT)
     run(['/bin/bash', str(ROOT / 'tools/install-build-tools.sh')], 'Preparing build tools')
     # Start.command deliberately bootstraps with Apple's Python. Use the modern
     # source-build interpreter installed above for extraction and subprocesses.
@@ -285,11 +304,16 @@ def main(argv=None):
     os.environ['BEDROCK_HOME'] = str(ROOT)
     os.environ.pop('BEDROCK_BUNDLE', None)
     if args.check:
+        accepted, reason = module('proprietary_consent').acceptance_status(ROOT)
+        if not accepted:
+            print('Proprietary components are disabled: ' + reason + '. Review EULA.md and enable its acceptance setting.')
+            return 1
         ready = installed()
         print('Ready to launch.' if ready else 'Setup needed. Open Start.command to continue.')
         return 0 if ready else 1
     if sys.platform != 'darwin' or platform.machine() != 'arm64' or int(platform.mac_ver()[0].split('.')[0]) < 15:
         raise RuntimeError('Open Start.command on an Apple Silicon Mac running macOS 15 or later.')
+    proprietary_consent().require_acceptance(ROOT)
     os.umask(0o077)
     os.environ['STANDALONE_JOBS'] = str(args.jobs)
     os.environ['PATH'] = ':'.join([str(Path(os.environ.get('CARGO_HOME', str(Path.home() / '.cargo'))) / 'bin'),

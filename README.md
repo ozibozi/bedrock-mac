@@ -28,10 +28,18 @@ Apple has announced a narrower Rosetta role there. An M1 Air, 16 GB, is
 clean-install qualification. Start with [source setup](#start-from-source).
 
 The macOS 28 Windows ARM route is still a feasibility investigation, not a
-playable adapter. Supporting launcher, virtualization, translation, graphics,
-and integration components must be open source; the existing Wine/Rosetta path
-remains the default. See the
+playable adapter. Use open-source supporting components where practical.
+Downloading or using proprietary vendor components requires the user's own
+license and manually enabled acceptance in [EULA.md](EULA.md); this does not
+replace Microsoft ownership checks. The existing Wine/Rosetta path remains the
+default. See the
 [migration status](docs/COMPATIBILITY.md#macos-28-and-windows-11-arm).
+
+Before setup can download or use Minecraft or Microsoft's proprietary runtime
+components, review `EULA.md` and change
+`PROPRIETARY_COMPONENTS_ACCEPTED = false` to `true`. It is disabled by default;
+keep the local change out of commits. The file is separate from the unchanged
+GPL `LICENSE`.
 
 ## Start from source
 

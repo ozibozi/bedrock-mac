@@ -36,6 +36,7 @@ if ! /usr/bin/xcode-select -p >/dev/null 2>&1; then
 fi
 /usr/bin/xcrun --find python3 >/dev/null
 if [ "$read_only" -eq 0 ] && ! /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null; then
+  /usr/bin/python3 "$ROOT/client/proprietary_consent.py" --root "$ROOT"
   printf 'Installing Rosetta. Follow Apple’s license prompt below.\n'
   /usr/sbin/softwareupdate --install-rosetta
 fi

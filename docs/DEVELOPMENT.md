@@ -94,6 +94,13 @@ with macOS 28. The Windows 11 ARM route is only an OSS feasibility
 investigation; no VM or graphics adapter replaces the existing Wine path or
 launches Bedrock. See
 [the Windows ARM migration status](COMPATIBILITY.md#macos-28-and-windows-11-arm).
+The compatibility entry records QEMU TCG/UTM/DXMT as an unverified candidate,
+not a supported setup; OSS components are preferred where practical, and any
+vendor-proprietary component requires the user's own license and EULA opt-in.
+Before the existing setup path downloads Microsoft
+game/runtime files, the user must review `EULA.md` and manually enable its
+acceptance setting. The separate GPL `LICENSE` remains unchanged, and the
+acceptance setting never replaces the ownership check.
 The native app only checks the x86-64 probe. `Start.command` can request Apple’s
 Rosetta installer during source setup; the user handles its license prompt.
 

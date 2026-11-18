@@ -2,7 +2,9 @@
 # Called only when Start needs to build an installation.
 set -euo pipefail
 export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:/opt/homebrew/opt/rustup/bin:/opt/homebrew/bin:/opt/homebrew/opt/llvm/bin:/opt/homebrew/opt/bison/bin:$PATH"
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 if ! /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null; then
+  python3 "$ROOT/client/proprietary_consent.py" --root "$ROOT"
   printf 'Installing Rosetta. Follow Apple’s license prompt below.\n'
   /usr/sbin/softwareupdate --install-rosetta
 fi

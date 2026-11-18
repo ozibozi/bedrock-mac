@@ -30,6 +30,7 @@ The original MIT license notice follows. Microsoft payloads are not included.
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -171,6 +172,21 @@ REGISTRY = {
 }
 
 
+def require_proprietary_acceptance():
+    source = SCRIPTS / "proprietary_consent.py"
+    spec = importlib.util.spec_from_file_location("bedrock_proprietary_consent", source)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("The proprietary-component acceptance checker is missing.")
+    consent = importlib.util.module_from_spec(spec)
+    previous = sys.dont_write_bytecode
+    try:
+        sys.dont_write_bytecode = True
+        spec.loader.exec_module(consent)
+    finally:
+        sys.dont_write_bytecode = previous
+    consent.require_acceptance(ROOT)
+
+
 def digest(data):
     return hashlib.sha256(data).hexdigest()
 
@@ -184,6 +200,7 @@ def verify_pe(data, is_dll):
 
 
 def payload(msi):
+    require_proprietary_acceptance()
     source = msi.read_bytes()
     if digest(source) != MSI_SHA256:
         raise RuntimeError("Unrecognized GameInput MSI. No files changed; this package needs a reviewed hash mapping.")
@@ -299,6 +316,7 @@ def atomic_write(path, data):
 
 
 def install(prefix, msi, wineserver):
+    require_proprietary_acceptance()
     validate_prefix(prefix)
     selected = payload(msi)
     require_idle(prefix, wineserver)

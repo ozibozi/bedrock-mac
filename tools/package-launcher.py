@@ -23,13 +23,14 @@ MACHO_MAGICS = {b'\xcf\xfa\xed\xfe', b'\xce\xfa\xed\xfe', b'\xfe\xed\xfa\xcf', b
 SOURCE_FILES = (
     'launcher/setup.py', 'launcher/BedrockLauncher.swift', 'launcher/Icon.swift',
     'tools/package-launcher.py', 'tools/build-launcher.sh', 'tools/build-dmg.py', 'tools/packaging-requirements.txt',
-    'client/standalone.py', 'client/standalone-setup.py', 'client/standalone-gameinput.py', 'client/winrt.reg',
+    'client/standalone.py', 'client/standalone-setup.py', 'client/standalone-gameinput.py',
+    'client/proprietary_consent.py', 'client/winrt.reg',
     'client/standalone-pickers.py', 'native/file-pickers/pickers.c', 'native/file-pickers/ids.h',
     'native/file-pickers/pickers.spec', 'native/file-pickers/build.sh', 'native/file-pickers/README.md',
     'native/file-pickers/check-windows.cmd', 'native/file-pickers/provenance/build-v1.sh.txt',
     'tests/file-picker-contract.c',
     'patches/standalone-dxmt-memory-lifetime.patch', 'native/graphics/standalone-dxmt-display-trace.c',
-    'LICENSE', 'THIRD_PARTY.md',
+    'LICENSE', 'EULA.md', 'THIRD_PARTY.md',
     'config/release-runtime-profile.json', 'config/native-dependencies.lock.json',
 )
 
@@ -40,6 +41,7 @@ BUNDLED_SCRIPTS = (
     ('client/standalone.py', 'standalone.py'),
     ('client/standalone-setup.py', 'standalone-setup.py'),
     ('client/standalone-gameinput.py', 'standalone-gameinput.py'),
+    ('client/proprietary_consent.py', 'proprietary_consent.py'),
     ('client/standalone-pickers.py', 'standalone-pickers.py'),
     ('client/winrt.reg', 'winrt.reg'),
     *[(name, name) for name in (
@@ -312,7 +314,7 @@ def main():
     shutil.copy2(helper, resources / 'standalone_helper')
     copy_bundle_scripts(captured, resources, include_bridge=bridge is not None)
     shutil.copytree(captured / 'LICENSES', resources / 'LICENSES', symlinks=True)
-    for name in ('LICENSE', 'THIRD_PARTY.md'):
+    for name in ('LICENSE', 'EULA.md', 'THIRD_PARTY.md'):
         shutil.copy2(captured / name, resources / name)
     if bridge is not None:
         # Validate the copies before signing, not just mutable input paths.

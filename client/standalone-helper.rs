@@ -28,6 +28,38 @@ impl std::fmt::Display for SetupFailure {
 impl std::error::Error for SetupFailure {}
 fn failure(code: &'static str) -> Box<dyn std::error::Error> { Box::new(SetupFailure(code)) }
 
+fn proprietary_consent_text_accepted(text: &str) -> bool {
+    let versions: Vec<_> = text.lines().map(str::trim)
+        .filter(|line| line.starts_with("EULA_VERSION")).collect();
+    let acceptances: Vec<_> = text.lines().map(str::trim)
+        .filter(|line| line.starts_with("PROPRIETARY_COMPONENTS_ACCEPTED")).collect();
+    versions == ["EULA_VERSION = 1"]
+        && acceptances == ["PROPRIETARY_COMPONENTS_ACCEPTED = true"]
+}
+
+fn require_proprietary_acceptance_at(root: &Path) -> Result<(), &'static str> {
+    let path = root.join("EULA.md");
+    let metadata = std::fs::symlink_metadata(&path)
+        .map_err(|_| "Review EULA.md and enable proprietary-component acceptance before use.")?;
+    if !metadata.file_type().is_file() {
+        return Err("EULA.md must be a regular file.");
+    }
+    let text = std::fs::read_to_string(path).map_err(|_| "EULA.md is unreadable.")?;
+    if !proprietary_consent_text_accepted(&text) {
+        return Err("Proprietary component use is disabled; review EULA.md and enable its current acceptance setting.");
+    }
+    Ok(())
+}
+
+fn require_proprietary_acceptance() -> Outcome<()> {
+    let root = match std::env::var_os("BEDROCK_HOME") {
+        Some(path) => PathBuf::from(path),
+        None => std::env::current_dir()?,
+    };
+    require_proprietary_acceptance_at(&root)?;
+    Ok(())
+}
+
 // Catalog/account/license traffic stays HTTPS. Public package bytes may come
 // from the two catalog HTTP origins ONLY into exclusive quarantine. Production
 // signature + complete hash tree + every data page + catalog identity must pass
@@ -709,6 +741,7 @@ async fn run_owned() -> Outcome<()> {
         return Ok(());
     }
     if mode != "--download" && mode != "--check-download" && mode != "--serve" && mode != "--sign-out" { return Err("Unknown helper mode.".into()); }
+    if mode != "--sign-out" { require_proprietary_acceptance()?; }
     let directory = PathBuf::from(args.next().ok_or("Game directory required.")?);
     let directory = if directory.is_absolute() { directory } else { std::env::current_dir()?.join(directory) };
     let mut market = String::from("CA");
@@ -798,6 +831,18 @@ async fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proprietary_components_require_current_explicit_acceptance() {
+        assert!(!proprietary_consent_text_accepted(
+            "EULA_VERSION = 1\nPROPRIETARY_COMPONENTS_ACCEPTED = false\n"));
+        assert!(proprietary_consent_text_accepted(
+            "EULA_VERSION = 1\nPROPRIETARY_COMPONENTS_ACCEPTED = true\n"));
+        assert!(!proprietary_consent_text_accepted(
+            "EULA_VERSION = 0\nPROPRIETARY_COMPONENTS_ACCEPTED = true\n"));
+        assert!(!proprietary_consent_text_accepted(
+            "EULA_VERSION = 1\nPROPRIETARY_COMPONENTS_ACCEPTED = false\nPROPRIETARY_COMPONENTS_ACCEPTED = true\n"));
+    }
 
     #[test]
     fn parent_receipt_requires_matching_process_and_resolved_executable() {

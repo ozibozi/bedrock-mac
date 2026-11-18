@@ -10,6 +10,7 @@ import argparse
 import ctypes
 import fcntl
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -42,6 +43,21 @@ GAMING_SHA256 = 'f8d5f3ebe7339d9d65ebf4b4d68cb7a5281c0f944acafd613ccc68d7d908bae
 THREADING_SHA256 = "aa611155057ebd01cf315ad702a4b5725aa9d5e6fad87732c956fe0a1e5fcfba"
 THREADING = ROOT / "runtime/xgameruntime.dll.threading"
 PATCHES = ("xodus-real-store-license.patch", "keychain-cache.patch", "unified-helper.patch", "standalone-signin-window.patch", "standalone-keychain-write.patch", "standalone-account-transport.patch", "standalone-helper-dependencies.patch", "xbox-auth-errors.patch", "standalone-package-ticket.patch", "standalone-xvd-preparation-length.patch", "standalone-content-license-tickets.patch")
+
+
+def require_proprietary_acceptance():
+    source = SCRIPTS / "proprietary_consent.py"
+    spec = importlib.util.spec_from_file_location("bedrock_proprietary_consent", source)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("The proprietary-component acceptance checker is missing.")
+    consent = importlib.util.module_from_spec(spec)
+    previous = sys.dont_write_bytecode
+    try:
+        sys.dont_write_bytecode = True
+        spec.loader.exec_module(consent)
+    finally:
+        sys.dont_write_bytecode = previous
+    consent.require_acceptance(ROOT)
 
 
 def sha256(path):
@@ -98,6 +114,7 @@ def check(directory):
 
 
 def acquire_threading():
+    require_proprietary_acceptance()
     if THREADING.is_symlink():
         raise RuntimeError("The threading DLL path is a symbolic link; it was preserved.")
     if THREADING.exists():
@@ -256,6 +273,7 @@ def build_helper(jobs):
 
 
 def download_game(directory, market):
+    require_proprietary_acceptance()
     status = game_status(directory)
     if all(status[key] for key in ("prepared_windows_x64_game", "minecraft_store_product", "package_metadata_present", "gameinput_installer_present")):
         print("The owned Windows game is already prepared; no sign-in or download needed.")

@@ -47,9 +47,46 @@ the current x86-64 capability check alone.
 
 **Current implementation:** the macOS 27 Wine/Rosetta route is unchanged and
 remains the default. There is no VM adapter or playable macOS 28 replacement.
-No supporting VM/graphics stack has yet been shown to meet the OSS requirement
-and run the actual game. Do not select a proprietary VM tool or API as a
-fallback, or infer game support from generic Windows ARM emulation.
+Use OSS supporting components where practical. The proprietary Minecraft
+client, Microsoft GDK/GameInput files, and any later vendor runtime components
+may be used only after the user enables the current acceptance in `EULA.md`
+and obtains them under their own vendor licenses. The opt-in is additional to,
+not a replacement for, Microsoft's real account ownership check. No VM or
+graphics stack has been shown to run the actual game.
+
+**OSS candidate, not a validated path:** [QEMU's accelerator
+overview](https://www.qemu.org/docs/master/system/introduction.html) lists its
+TCG CPU emulator for macOS on Arm; TCG is software emulation and is the mode
+that avoids Apple's proprietary Hypervisor.framework. QEMU also supports
+Apple's `hvf` accelerator. The user permits licensed vendor virtualization
+APIs other than Parallels; an HVF configuration could therefore be evaluated
+under Apple's terms, but it would not be OSS. [UTM's
+source](https://github.com/utmapp/UTM) describes an open-source QEMU front end
+with ARM64 and TCG support, but also exposes HVF; a test must record which
+accelerator is used and the applicable Apple terms.
+
+The [UTM Windows guest graphics guide](https://docs.getutm.app/guest-support/windows/)
+documents experimental accelerated DirectX graphics for Windows 11 guests
+using its QEMU backend, while warning that game compatibility is limited and
+the driver may destabilize the guest. It identifies DXMT for DirectX 11 and
+D3DMetal for DirectX 12; on Apple silicon D3DMetal requires Rosetta, so it is
+not the candidate graphics route. The docs do not establish that UTM can pair
+an ARM64 Windows guest, forced TCG, and DXMT, nor that the native Bedrock client
+works with it. UTM's guest graphics also rely on an Apple Metal renderer; if
+this proprietary macOS API is used, it must be disclosed and covered by the
+user's Apple license/terms. The precise guest-driver source and license in the
+distributed UTM guest-tools image also need verification before including it
+in a product.
+
+[QEMU's `virtio-gpu` documentation](https://www.qemu.org/docs/master/system/devices/virtio/virtio-gpu.html)
+calls 3D acceleration evolving and describes Linux guest-kernel support and
+Linux-specific accelerated-host requirements; it does not document a Windows
+ARM DirectX 11 gaming route on macOS. This is not a drop-in alternative to
+UTM's experimental driver. UTM identifies its front end as Apache-licensed
+with LGPL/GPL components; any adopted build still needs an exact dependency
+and redistribution review. DXMT's current repository license/provenance is
+recorded in [THIRD_PARTY.md](../THIRD_PARTY.md); no QEMU/UTM VM or game launch
+has been tested for this repository.
 
 **Blocking client/package facts:** the existing acquisition path explicitly
 accepts only an AMD64 PE for `Minecraft.Windows.exe`
@@ -64,5 +101,7 @@ claiming the requested client exists or changing the downloader.
 Before implementation, establish that a user-supplied, licensed Windows 11 ARM
 guest can be run with only permitted OSS components, identify a native ARM64
 Bedrock package, and verify its ownership/install path, DirectX 11 APIs, and
-vanilla gameplay. No Linux support, proprietary VM fallback, x64-client
-substitution, or visual modifications are part of this migration.
+vanilla gameplay. Document each vendor component in `EULA.md` before enabling
+its download/use; keep the setting disabled until the user accepts. No Linux
+support, Parallels, x64-client substitution, or visual modifications are part
+of this migration.

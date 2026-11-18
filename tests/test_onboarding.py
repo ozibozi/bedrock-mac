@@ -26,6 +26,12 @@ runtime_spec.loader.exec_module(runtime)
 
 
 class OnboardingTests(unittest.TestCase):
+    def accept_eula(self, root):
+        contents = (Path(__file__).resolve().parents[1] / 'EULA.md').read_text()
+        (root / 'EULA.md').write_text(contents.replace(
+            'PROPRIETARY_COMPONENTS_ACCEPTED = false',
+            'PROPRIETARY_COMPONENTS_ACCEPTED = true'))
+
     def test_invalid_market_is_rejected_before_data_or_account_access(self):
         for market in ('', 'T', 'TUR', 'tr', 'T1', 'ＴＲ', '../TR'):
             with self.subTest(market=market), tempfile.TemporaryDirectory() as temporary:
@@ -42,6 +48,7 @@ class OnboardingTests(unittest.TestCase):
     def test_selected_market_reaches_returning_account_and_game_launch(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            self.accept_eula(root)
             (root / 'game').mkdir()
             (root / 'game/Minecraft.Windows.exe').write_bytes(b'MZfixture')
             account = unittest.mock.Mock(return_value=contextlib.nullcontext())
@@ -143,6 +150,10 @@ class OnboardingTests(unittest.TestCase):
                 (bundle / 'scripts').mkdir(parents=True)
                 for name in ('standalone.py', 'standalone-setup.py', 'standalone-gameinput.py', 'standalone-pickers.py', 'winrt.reg'):
                     (bundle / 'scripts' / name).write_bytes(b'current bundled script')
+                (bundle / 'scripts/proprietary_consent.py').write_bytes(b'consent checker')
+                (bundle / 'EULA.md').write_text('bundled default acceptance')
+                if linked:
+                    (home / 'EULA.md').write_text('user-edited acceptance')
                 recovery = root / 'recovery-file'
                 recovery.write_bytes(b'preserve recovery bytes')
                 staging = home / 'standalone.py.new'
@@ -157,6 +168,8 @@ class OnboardingTests(unittest.TestCase):
                 self.assertEqual(staging.read_bytes(), b'preserve recovery bytes' if linked else b'preserve staged bytes')
                 self.assertFalse((home / 'standalone.py').is_symlink())
                 self.assertEqual((home / 'standalone.py').read_bytes(), b'current bundled script')
+                expected_eula = 'user-edited acceptance' if linked else 'bundled default acceptance'
+                self.assertEqual((home / 'EULA.md').read_text(), expected_eula)
 
     def test_update_journal_preserves_existing_staging_files_and_links(self):
         for linked in (False, True):
@@ -378,6 +391,7 @@ class OnboardingTests(unittest.TestCase):
                     process.stderr.close()
 
     def update_fixture(self, root, fail=None):
+        self.accept_eula(root)
         game = root / 'game'
         game.mkdir()
         (game / 'Minecraft.Windows.exe').write_bytes(b'MZold')
@@ -757,6 +771,7 @@ class OnboardingTests(unittest.TestCase):
         # The fake child provides a real private socket and counts each launch.
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
+            self.accept_eula(root)
             helper = root / 'helper'
             helper.touch()
             state, endpoint = root / 'session.json', root / 'account.sock'
@@ -854,6 +869,8 @@ class OnboardingTests(unittest.TestCase):
             (bundle / 'scripts').mkdir(parents=True)
             for name in ('standalone.py', 'standalone-setup.py', 'standalone-gameinput.py', 'standalone-pickers.py', 'winrt.reg'):
                 (bundle / 'scripts' / name).write_text('bundled script')
+            (bundle / 'scripts/proprietary_consent.py').write_text('consent checker')
+            (bundle / 'EULA.md').write_text('default acceptance')
             with patch.object(worker, 'ROOT', home), patch.object(worker, 'BUNDLE', bundle):
                 worker.initialize_bundle()
                 worker.initialize_bundle()
@@ -871,6 +888,10 @@ class OnboardingTests(unittest.TestCase):
             home, old, new = root / 'data', root / 'old-app', root / 'new-app'
             home.mkdir()
             (home / 'standalone.py').touch()
+            self.accept_eula(home)
+            (new / 'scripts').mkdir(parents=True)
+            (new / 'scripts/proprietary_consent.py').write_bytes(
+                (Path(__file__).resolve().parents[1] / 'client/proprietary_consent.py').read_bytes())
             fixture_runtime = SimpleNamespace(prerequisites=lambda _: None, HELPER=home / 'standalone.py',
                                               setup_signature=lambda _: {}, setup_matches=lambda _: True)
             for relative, bundled in worker.BUNDLE_LINKS.items():
@@ -897,6 +918,8 @@ class OnboardingTests(unittest.TestCase):
             (bundle / 'scripts').mkdir(parents=True)
             for name in ('standalone.py', 'standalone-setup.py', 'standalone-gameinput.py', 'standalone-pickers.py', 'winrt.reg'):
                 (bundle / 'scripts' / name).write_text('bundled script')
+            (bundle / 'scripts/proprietary_consent.py').write_text('consent checker')
+            (bundle / 'EULA.md').write_text('default acceptance')
             with patch.object(worker, 'ROOT', home), patch.object(worker, 'BUNDLE', bundle):
                 with self.assertRaisesRegex(RuntimeError, 'existing installation blocks'):
                     worker.initialize_bundle()
@@ -924,28 +947,34 @@ class OnboardingTests(unittest.TestCase):
                              ['standalone-setup.py', 'standalone.py'])
 
     def test_returning_player_skips_installation_and_launches(self):
-        with tempfile.TemporaryDirectory() as folder, patch.object(worker, 'ROOT', Path(folder)), \
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.accept_eula(root)
+            with patch.object(worker, 'ROOT', root), \
                 patch.object(worker, 'installed', return_value=True), patch.object(worker, 'validate_install'), \
                 patch.object(worker, 'load', return_value=SimpleNamespace(
                     account=lambda *a, **kw: contextlib.nullcontext(), AccountError=runtime.AccountError)), \
                 patch.object(worker, 'install') as install, patch.object(worker, 'run') as run, \
                 patch('sys.argv', ['setup.py']), contextlib.redirect_stdout(io.StringIO()) as output:
-            worker.main()
-            install.assert_not_called()
-            self.assertEqual(run.call_args.args[0][-1], 'launch')
-            self.assertEqual(json.loads(output.getvalue().splitlines()[-1])['state'], 'ready')
+                worker.main()
+                install.assert_not_called()
+                self.assertEqual(run.call_args.args[0][-1], 'launch')
+                self.assertEqual(json.loads(output.getvalue().splitlines()[-1])['state'], 'ready')
 
     def test_failed_setup_never_launches_the_game(self):
-        with tempfile.TemporaryDirectory() as folder, patch.object(worker, 'ROOT', Path(folder)), \
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.accept_eula(root)
+            with patch.object(worker, 'ROOT', root), \
                 patch.object(worker, 'installed', return_value=False), \
                 patch.object(worker, 'validate_install'), \
                 patch.object(worker, 'load', return_value=SimpleNamespace(
                     account=lambda *a, **kw: contextlib.nullcontext(), AccountError=runtime.AccountError)), \
                 patch.object(worker, 'install', side_effect=RuntimeError('Setup failed')), \
                 patch.object(worker, 'run') as run, patch('sys.argv', ['setup.py']):
-            with self.assertRaisesRegex(RuntimeError, 'Setup failed'):
-                worker.main()
-            run.assert_not_called()
+                with self.assertRaisesRegex(RuntimeError, 'Setup failed'):
+                    worker.main()
+                run.assert_not_called()
 
     def test_download_progress_advances_and_rejects_invalid_counts(self):
         with contextlib.redirect_stdout(io.StringIO()) as output:
@@ -987,6 +1016,7 @@ class OnboardingTests(unittest.TestCase):
     def test_cancel_releases_setup_lock_and_retry_preserves_world(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            self.accept_eula(root)
             (root / 'game').mkdir()
             (root / 'game/Minecraft.Windows.exe').touch()
             world = root / 'bottles/Bedrock-Standalone/fixture-world'
@@ -1021,6 +1051,7 @@ class OnboardingTests(unittest.TestCase):
     def test_failed_setup_can_retry_without_redownloading_existing_game(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            self.accept_eula(root)
             (root / 'game').mkdir()
             game = root / 'game/Minecraft.Windows.exe'
             game.write_bytes(b'MZexisting game')
@@ -1095,6 +1126,7 @@ class OnboardingTests(unittest.TestCase):
     def test_status_offers_existing_game_setup_without_mutation(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            self.accept_eula(root)
             (root / 'game').mkdir()
             (root / 'game/Minecraft.Windows.exe').write_bytes(b'MZfixture')
             with patch.object(worker, 'ROOT', root), patch.object(worker, 'installed', return_value=False), \

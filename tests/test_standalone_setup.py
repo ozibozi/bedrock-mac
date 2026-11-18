@@ -31,6 +31,11 @@ native_dependencies = module("native_dependencies_under_test", "tools/build-nati
 
 
 class DependencyPrefixTests(unittest.TestCase):
+    def setUp(self):
+        acceptance = patch.object(setup, "require_proprietary_acceptance")
+        acceptance.start()
+        self.addCleanup(acceptance.stop)
+
     def test_fresh_setup_and_bootstrap_apply_the_same_xodus_patches(self):
         self.assertEqual(setup.PATCHES, bootstrap.PROJECTS['xodus']['patches'])
 
@@ -259,6 +264,11 @@ class SourceVerificationTests(unittest.TestCase):
 
 
 class SetupRecoveryTests(unittest.TestCase):
+    def setUp(self):
+        acceptance = patch.object(setup, "require_proprietary_acceptance")
+        acceptance.start()
+        self.addCleanup(acceptance.stop)
+
     @unittest.skipUnless(sys.platform == "darwin", "macOS atomic installation promotion")
     def test_completed_partial_gdk_is_recovered_without_another_request(self):
         archive, dll = b"archive-fixture", b"dll-fixture"

@@ -11,8 +11,10 @@ notarized installer is available. See [setup](README.md#start-from-source),
 [build instructions](docs/DEVELOPMENT.md) and [release readiness](docs/RELEASE.md).
 
 The supported game/runtime path remains x86-64 and requires Rosetta on Apple
-Silicon. The macOS-only Windows 11 ARM route is an OSS feasibility
-investigation; no VM adapter or playable replacement is implemented. Apple
+Silicon. The macOS-only Windows 11 ARM route is a feasibility investigation using
+open-source components where practical; no VM adapter or playable replacement
+is implemented. Proprietary vendor downloads/use require the user's explicit
+EULA opt-in and their own vendor license. Apple
 documents a narrower Rosetta role starting with macOS 28, but this project has
 no qualified replacement runtime or macOS 28 compatibility claim. See the
 [compatibility status](docs/COMPATIBILITY.md#macos-28-and-windows-11-arm) and
