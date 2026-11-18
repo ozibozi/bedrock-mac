@@ -572,6 +572,56 @@ sys.exit(start.cli())
                                     line.split('|', 1)[0].strip())
             self.assertLessEqual(len(reporter.detail), reporter.STATUS_WIDTH)
 
+    def test_autoconf_probe_exclamation_is_detail_not_a_failure_event(self):
+        class TTYCapture(io.StringIO):
+            def isatty(self):
+                return True
+
+        output = TTYCapture()
+        reporter = start.SetupReporter(output, environment={'TERM': 'xterm-256color'})
+        reporter.begin('Building native source dependencies')
+        probe = ('! checking if we should use a .note.GNU-stack section... '
+                 '/Applications/Xcode.app/Contents/Developer/usr/bin/ld')
+        reporter.output_line(probe.encode())
+
+        self.assertTrue(reporter.detail.startswith('! checking if we should use'))
+        self.assertEqual(reporter.stage_label, 'Native dependencies')
+        self.assertNotIn(reporter.paint('!', '1;31'), output.getvalue())
+
+    def test_nonzero_process_exit_is_reported_as_failure(self):
+        read_fd, write_fd = os.pipe()
+        os.write(write_fd, b'! checking if we should use a .note.GNU-stack section...\n')
+        os.close(write_fd)
+
+        class Process:
+            pid = os.getpid()
+            stdout = os.fdopen(read_fd, 'rb', buffering=0)
+
+            @staticmethod
+            def poll():
+                return 1
+
+            @staticmethod
+            def wait(timeout=None):
+                return 1
+
+        def spawn(_command, *, cwd, stdout, stderr, start_new_session, bufsize):
+            return Process()
+
+        class TTYCapture(io.StringIO):
+            def isatty(self):
+                return True
+
+        output = TTYCapture()
+        log = self.root / 'logs/failed-build.log'
+        with patch.object(start.subprocess, 'Popen', side_effect=spawn), \
+                contextlib.redirect_stdout(output), \
+                self.assertRaisesRegex(RuntimeError, 'failed; see the setup log'):
+            start.run(['build'], 'Building the Windows compatibility runtime', log)
+
+        self.assertIn('\033[1;31m!\033[0m', output.getvalue())
+        self.assertIn('failed; see the setup log', output.getvalue())
+
     def test_completed_archive_event_clears_live_download_row(self):
         class TTYCapture(io.StringIO):
             def isatty(self):

@@ -248,11 +248,10 @@ class SetupReporter:
             return
         text = text.replace(str(Path.home()), '~').replace(str(ROOT), '$SOURCE')
         completed = bool(COMPLETED_STATUS.search(text))
-        failed = bool(ERROR_STATUS.search(text))
         download = DOWNLOAD_NAME.search(text) or RESUME_NAME.search(text)
         dependency = DEPENDENCY_NAME.match(text)
         archive_event = ARCHIVE_EVENT.search(text)
-        if completed or failed:
+        if completed:
             if archive_event:
                 self.current_download = None
                 self.stage_label = 'Native dependencies'
@@ -263,7 +262,7 @@ class SetupReporter:
                 self.detail = 'Verified'
                 self.tasks.clear()
                 self.current_download = None
-            self.event(text, success=completed and not failed, failed=failed)
+            self.event(text, success=True)
             return
         if CURL_PROGRESS.match(text):
             if self.current_download:
@@ -295,7 +294,8 @@ class SetupReporter:
                 self.stage_label = ('Downloading ' + label)[:self.NAME_WIDTH]
                 self.update_stage('Fetching verified source')
             return
-        if ACTIVE_STATUS.search(text) or re.search(r'(?i)config\.status:\s*linking\b', text):
+        if (ACTIVE_STATUS.search(text) or ERROR_STATUS.search(text)
+                or re.search(r'(?i)config\.status:\s*linking\b', text)):
             self.update_stage(text)
 
     def progress(self, elapsed):
@@ -507,6 +507,7 @@ def run(command, label, log=None):
             selector.close()
             process.stdout.close()
         if code:
+            reporter.event(f'{label} failed; see the setup log.', failed=True)
             reporter.finish('')
             raise RuntimeError(f'{label} failed; see the setup log. Reopen Start.command to retry.')
     reporter.finish('')
