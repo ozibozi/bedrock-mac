@@ -11,11 +11,13 @@ from pathlib import Path
 import platform
 import re
 import selectors
+import shutil
 import signal
 import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 
 ROOT = Path(__file__).resolve().parents[1]
 STAGE_NAMES = ('wine', 'graphics', 'helper', 'probes', 'bridge')
@@ -43,31 +45,59 @@ ANSI_ESCAPE = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
 SENSITIVE_OUTPUT = re.compile(
     r'(?i)\b(?:authorization|access[_ -]?token|refresh[_ -]?token|token|client[_ -]?secret|'
     r'secret|credential|password|cookie|bearer)\b|https?://\S+')
-BUILD_STATUS = re.compile(
-    r'(?i)\b(?:compiling|checking|downloading|installing|building|generating|linking|'
-    r'finished|verified|reusing|resuming|discarded|extracting|configuring|error|failed|'
-    r'retrying|curl:)\b')
-COMPLETED_STATUS = re.compile(r'(?i)\b(?:finished|verified|reusing|reused|discarded|complete(?:d)?|installed)\b')
-ERROR_STATUS = re.compile(r'(?i)\b(?:error|failed|curl:)\b')
+COMPLETED_STATUS = re.compile(
+    r'(?i)^\s*(?:finished|verified|reusing|reused|discarded|complete(?:d)?|installed)\b')
 ACTIVE_STATUS = re.compile(
-    r'(?i)\b(?:compiling|checking|downloading|installing|building|generating|linking|'
+    r'(?i)^\s*(?:compiling|checking|downloading|installing|building|generating|linking|'
     r'resuming|extracting|configuring|retrying)\b')
+CONFIGURE_PROBE = re.compile(r'(?i)^\s*checking\b')
+COMPILER_OUTPUT = re.compile(r'(?i)^(?:CC|CXX|GEN|LD|LINK)\s+\S')
 CURL_PROGRESS = re.compile(r'^\s*#+.*\b\d{1,3}(?:\.\d+)?%')
 CMAKE_PROGRESS = re.compile(r'\[\s*\d{1,3}%\]')
 CURL_PERCENT = re.compile(r'\b(\d{1,3}(?:\.\d+)?)%')
 DOWNLOAD_NAME = re.compile(r'(?i)(?:source archive|graphics asset):\s*([A-Za-z0-9._+-]+)')
 RESUME_NAME = re.compile(r'(?i)Resuming partial source download:\s*([A-Za-z0-9._+-]+)')
-COMPILE_NAME = re.compile(r'(?i)^(Compiling|Checking)\s+([A-Za-z0-9._+-]+)')
+NATIVE_COMPONENT_LABELS = {
+    'gmp': 'GMP',
+    'nettle': 'Nettle',
+    'libtasn1': 'libtasn1',
+    'libunistring': 'libunistring',
+    'gnutls': 'GnuTLS',
+    'freetype': 'FreeType',
+}
+DEPENDENCY_NAME = re.compile(r'(?i)^Building dependency:\s*([A-Za-z0-9._+-]+)$')
+ARCHIVE_EVENT = re.compile(
+    r'(?i)(?:Verified and cached|Reusing verified) source archive:\s*([A-Za-z0-9._+-]+)')
 CMAKE_PERCENT = re.compile(r'\[\s*(\d{1,3})%\]\s*(.*)')
 
 
 class SetupReporter:
     """Render truthful, optionally colorful stage progress for an interactive terminal."""
 
-    BAR_WIDTH = 10
     MAX_ROWS = 4
-    NAME_WIDTH = 14
-    STATUS_WIDTH = 32
+    MIN_PANEL_WIDTH = 16
+    CONTEXT_LINES = 3
+    MAX_DETAIL_LENGTH = 240
+    CREEPER_UNICODE = (
+        '🟩🟩🟩🟩🟩🟩🟩🟩',
+        '🟩⬛⬛🟩🟩⬛⬛🟩',
+        '🟩⬛⬛🟩🟩⬛⬛🟩',
+        '🟩🟩🟩⬛⬛🟩🟩🟩',
+        '🟩🟩⬛⬛⬛⬛🟩🟩',
+        '🟩🟩⬛⬛⬛⬛🟩🟩',
+        '🟩🟩⬛🟩🟩⬛🟩🟩',
+        '🟩🟩🟩🟩🟩🟩🟩🟩',
+    )
+    CREEPER_ASCII = (
+        '########',
+        '#  ##  #',
+        '#  ##  #',
+        '###  ###',
+        '##    ##',
+        '##    ##',
+        '## ## ##',
+        '########',
+    )
 
     def __init__(self, stream=None, *, fun_facts=False, environment=None):
         self.stream = sys.stdout if stream is None else stream
@@ -79,6 +109,18 @@ class SetupReporter:
         self.tty = bool(is_tty and environment.get('TERM') != 'dumb')
         self.color = bool(self.tty and not environment.get('NO_COLOR')
                           and environment.get('CLICOLOR') != '0')
+        encoding = getattr(self.stream, 'encoding', None) or 'utf-8'
+        try:
+            for line in self.CREEPER_UNICODE:
+                line.encode(encoding)
+            self.unicode_creeper = self.color
+        except (LookupError, UnicodeEncodeError):
+            self.unicode_creeper = False
+        self.terminal_width = max(
+            self.MIN_PANEL_WIDTH, min(140, shutil.get_terminal_size((100, 24)).columns))
+        unicode_prefix_width = self.display_width('  ' + self.CREEPER_UNICODE[0] + '   | ')
+        if self.unicode_creeper and self.terminal_width < unicode_prefix_width:
+            self.unicode_creeper = False
         self.fun_facts = fun_facts
         self.fact_index = 0
         self.last_fact_elapsed = 0
@@ -86,36 +128,89 @@ class SetupReporter:
         self.spinner_index = 0
         self.tasks = {}
         self.current_download = None
+        self.stage_label = 'Setup'
+        self.detail = 'Working'
+        self.percent = None
+        self.recent_output = []
         self.panel_rows = 0
+        self.screen_initialized = False
         self.non_tty_buckets = {}
         self.last_non_tty_update = 0
         self.stage_started = time.monotonic()
+        self.phase_result = None
+        self.failure_reported = False
 
     def paint(self, text, color):
         if not self.color:
             return text
         return f'\033[{color}m{text}\033[0m'
 
+    @staticmethod
+    def display_width(text):
+        text = ANSI_ESCAPE.sub('', text)
+        return sum(2 if unicodedata.east_asian_width(character) in ('W', 'F') else 1
+                   for character in text)
+
+    @staticmethod
+    def clip_display(text, width):
+        clipped = []
+        used = 0
+        for character in text:
+            character_width = (
+                2 if unicodedata.east_asian_width(character) in ('W', 'F') else 1)
+            if used + character_width > width:
+                break
+            clipped.append(character)
+            used += character_width
+        return ''.join(clipped)
+
     def begin(self, label):
-        self.clear_panel()
+        if self.tty and not self.screen_initialized:
+            self.stream.write('\033[2J\033[H')
+            self.screen_initialized = True
         self.tasks.clear()
         self.current_download = None
+        self.stage_label = {
+            'Building native source dependencies': 'Native dependencies',
+            'Building the Windows compatibility runtime': 'Wine runtime',
+            'Building Microsoft sign-in': 'Sign-in helper',
+            'Installing graphics support': 'Graphics support',
+            'Building graphics checks': 'Graphics checks',
+            'Building and testing the graphics memory fixes': 'Graphics bridge',
+            'Installing Microsoft game support': 'Microsoft component',
+            'Downloading Minecraft': 'Minecraft download',
+            'Preparing Minecraft': 'Minecraft setup',
+            'Starting Minecraft': 'Minecraft launch',
+        }.get(label, label)
+        self.detail = 'Working'
+        self.percent = None
+        self.phase_result = None
+        self.failure_reported = False
+        details = STAGE_DETAILS.get(label)
+        self.recent_output[:] = [details] if details else []
         self.non_tty_buckets.clear()
         self.last_non_tty_update = 0
         self.stage_started = time.monotonic()
-        self.stream.write('\n' + self.paint(label, '1;36') + '\n')
-        details = STAGE_DETAILS.get(label)
-        if details:
-            self.stream.write('  ' + details + '\n')
-        self.stream.flush()
+        if self.tty:
+            self.render_progress(0)
+        else:
+            self.stream.write('\n' + label + '\n')
+            if details:
+                self.stream.write('  ' + details + '\n')
+            self.stream.flush()
         if self.fun_facts and self.fact_index == 0:
             self.fact()
 
     def fact(self):
-        self.stream.write('  ' + self.paint('Fun fact: ', '1;35')
-                          + FUN_FACTS[self.fact_index % len(FUN_FACTS)] + '\n')
+        text = 'Fun fact: ' + FUN_FACTS[self.fact_index % len(FUN_FACTS)]
         self.fact_index += 1
-        self.stream.flush()
+        if self.tty:
+            self.recent_output.append(text)
+            self.recent_output = self.recent_output[-self.CONTEXT_LINES:]
+            self.render_progress(int(time.monotonic() - self.stage_started))
+        else:
+            self.stream.write('  ' + text + '\n')
+            self.stream.flush()
 
     def clear_panel(self):
         if not self.tty or not self.panel_rows:
@@ -127,7 +222,7 @@ class SetupReporter:
 
     def update_task(self, key, name, status, percent=None):
         self.tasks.pop(key, None)
-        self.tasks[key] = {'name': name[:18], 'status': status, 'percent': percent}
+        self.tasks[key] = {'name': name, 'status': status, 'percent': percent}
         while len(self.tasks) > self.MAX_ROWS:
             self.tasks.pop(next(iter(self.tasks)))
         if self.tty:
@@ -135,36 +230,60 @@ class SetupReporter:
         else:
             self.non_tty_update(key, percent)
 
+    def update_stage(self, status, percent=None, *, include_context=True):
+        self.detail = status[:self.MAX_DETAIL_LENGTH]
+        if (include_context and status
+                and (not self.recent_output or self.recent_output[-1] != self.detail)):
+            self.recent_output.append(self.detail)
+            self.recent_output = self.recent_output[-self.CONTEXT_LINES:]
+        if percent is not None:
+            self.percent = percent
+        self.tasks.clear()
+        self.tasks['stage'] = {
+            'name': self.stage_label,
+            'status': self.detail,
+            'percent': self.percent,
+        }
+        if self.tty:
+            self.render_progress(int(time.monotonic() - self.stage_started))
+        else:
+            self.non_tty_update('stage', self.percent)
+
     def render_progress(self, elapsed):
-        tasks = list(self.tasks.values())[-self.MAX_ROWS:]
-        if not tasks:
-            tasks = [{'name': 'setup', 'status': 'Working', 'percent': None}]
+        percent = self.percent
+        if percent is None:
+            self.spinner_index += 1
+            percent_text = '--%'
+        else:
+            percent_text = f'{round(percent)}%'
+
+        elapsed_text = f'{elapsed // 60:02}:{elapsed % 60:02}'
+        art = self.CREEPER_UNICODE if self.unicode_creeper else self.CREEPER_ASCII
+        recent = self.recent_output[-self.CONTEXT_LINES:]
+        result = self.phase_result or percent_text
+        details = [self.stage_label + ' | ' + elapsed_text + ' | ' + result]
+        if recent:
+            details.extend(recent)
+        elif not self.phase_result and self.detail:
+            details.append(self.detail)
+        details = details[:len(art)]
         rows = []
-        for task in tasks:
-            percent = task['percent']
-            if percent is None:
-                segment = 3
-                offset = self.spinner_index % (self.BAR_WIDTH - segment + 1)
-                self.spinner_index += 1
-                bar = '-' * offset + '=' * segment + '-' * (self.BAR_WIDTH - offset - segment)
-                percent_text = ' --%'
-            else:
-                filled = round(self.BAR_WIDTH * percent / 100)
-                bar = '#' * filled + '-' * (self.BAR_WIDTH - filled)
-                percent_text = f'{round(percent):3}%'
-            status = task['status'][:self.STATUS_WIDTH]
-            row = (f'  {self.paint(bar, "36")} {percent_text} | '
-                   f'{task["name"]:<{self.NAME_WIDTH}} | {status:<{self.STATUS_WIDTH}} | '
-                   f'{elapsed // 60:02}:{elapsed % 60:02}')
-            rows.append(row)
-        old_rows = self.panel_rows
-        target_rows = max(old_rows, len(rows))
-        if old_rows:
-            self.stream.write(f'\033[{old_rows}A')
-        for index in range(target_rows):
-            line = rows[index] if index < len(rows) else ''
-            self.stream.write('\r\033[K' + line + '\n')
-        self.panel_rows = target_rows
+        for index, drawing in enumerate(art):
+            left = '  ' + (drawing if self.unicode_creeper else self.paint(drawing, '1;32'))
+            prefix = left + '   | '
+            detail = details[index] if index < len(details) else ''
+            detail_width = max(0, self.terminal_width - self.display_width(prefix))
+            clipped = self.clip_display(detail, detail_width)
+            color = '1;31' if index == 0 and self.phase_result == 'FAILED' else None
+            row = prefix + (self.paint(clipped, color) if color else clipped)
+            rows.append(row + ' ' * max(
+                0, self.terminal_width - self.display_width(row)))
+
+        if self.panel_rows:
+            self.stream.write(f'\033[{self.panel_rows}A')
+        for row in rows:
+            self.stream.write('\r\033[K' + row + '\n')
+        self.panel_rows = len(rows)
         self.stream.flush()
 
     def non_tty_update(self, key, percent):
@@ -186,11 +305,45 @@ class SetupReporter:
         self.stream.write('  ' + self.paint('›', '1;34') + ' ' + message[:72] + '\n')
         self.stream.flush()
 
-    def event(self, text, *, success=False, failed=False):
+    def event(self, text, *, success=False, failed=False, cause=None, log=None):
+        if failed:
+            self.failure_reported = True
+        if self.tty:
+            if failed:
+                self.phase_result = 'FAILED'
+                self.recent_output = []
+                if cause:
+                    self.recent_output.append('Cause: ' + cause)
+                    if 'Close the standalone game and its account helper' in cause:
+                        self.recent_output.append(
+                            'Action: quit the game/helper normally, then retry.')
+                else:
+                    self.recent_output.append(text)
+                if log:
+                    try:
+                        log_name = log.relative_to(ROOT).as_posix()
+                    except ValueError:
+                        log_name = log.name
+                    self.recent_output.append('Full log: ' + log_name)
+                self.recent_output = self.recent_output[-self.CONTEXT_LINES:]
+            else:
+                self.recent_output = [text]
+            self.update_stage(text[:self.MAX_DETAIL_LENGTH], include_context=False)
+            return
         self.clear_panel()
         marker, color = ('!', '1;31') if failed else (
             ('✓', '1;32') if success else ('↻', '1;33'))
         self.stream.write('  ' + self.paint(marker, color) + ' ' + text[:68] + '\n')
+        if cause:
+            self.stream.write('    Cause: ' + cause[:180] + '\n')
+        if failed:
+            self.stream.write('    Reopen Start.command to retry after resolving the cause.\n')
+        if log:
+            try:
+                log_name = log.relative_to(ROOT).as_posix()
+            except ValueError:
+                log_name = log.name
+            self.stream.write('    Full log: ' + log_name + '\n')
         self.stream.flush()
 
     def output_line(self, raw):
@@ -199,80 +352,106 @@ class SetupReporter:
         text = ''.join(character for character in text
                        if character.isprintable() or character == '\t')
         text = ' '.join(text.split())
-        if not text or SENSITIVE_OUTPUT.search(text):
+        if not text or text.startswith('!') or SENSITIVE_OUTPUT.search(text):
             return
-        if not (BUILD_STATUS.search(text) or CURL_PROGRESS.match(text)
-                or CMAKE_PROGRESS.search(text)):
+        if (CONFIGURE_PROBE.match(text)
+                or not (COMPLETED_STATUS.match(text) or DOWNLOAD_NAME.search(text)
+                        or RESUME_NAME.search(text) or CURL_PROGRESS.match(text)
+                        or CMAKE_PROGRESS.search(text) or ACTIVE_STATUS.match(text)
+                        or COMPILER_OUTPUT.match(text)
+                        or re.search(r'(?i)^config\.status:\s*linking\b', text))):
             return
         text = text.replace(str(Path.home()), '~').replace(str(ROOT), '$SOURCE')
         completed = bool(COMPLETED_STATUS.search(text))
-        failed = bool(ERROR_STATUS.search(text))
         download = DOWNLOAD_NAME.search(text) or RESUME_NAME.search(text)
-        if completed or failed:
-            if download:
-                key = 'download:' + download.group(1).lower()
-                self.tasks.pop(key, None)
-                if self.current_download == key:
-                    self.current_download = None
-            elif re.search(r'(?i)\bFinished\b', text):
-                for key in list(self.tasks):
-                    if key.startswith('cargo:'):
-                        self.tasks.pop(key)
+        dependency = DEPENDENCY_NAME.match(text)
+        archive_event = ARCHIVE_EVENT.search(text)
+        if completed:
+            if archive_event:
+                self.current_download = None
+                self.stage_label = 'Native dependencies'
+                self.percent = None
+                self.recent_output = [
+                    'Preparing source builds',
+                    'Reused verified archive: ' + archive_event.group(1).lower(),
+                ]
+                self.update_stage('Preparing source builds', include_context=False)
+                return
             elif 'Verified dependency prefix' in text:
+                self.percent = None
+                self.detail = 'Verified'
                 self.tasks.clear()
                 self.current_download = None
-            self.event(text, success=completed and not failed, failed=failed)
+                self.update_stage('Verified', include_context=False)
+                return
+            self.update_stage(text[:self.MAX_DETAIL_LENGTH])
             return
         if CURL_PROGRESS.match(text):
             if self.current_download:
                 match = CURL_PERCENT.search(text)
                 if match:
                     percent = min(100.0, max(0.0, float(match.group(1))))
-                    task = self.tasks.get(self.current_download)
-                    if task:
-                        self.update_task(self.current_download, task['name'], task['status'], percent)
+                    self.update_stage(self.detail, percent)
             return
         cmake = CMAKE_PERCENT.search(text)
         if cmake:
             percent = min(100.0, max(0.0, float(cmake.group(1))))
-            self.update_task('cmake:build', 'Build', cmake.group(2).strip() or 'Building', percent)
+            self.update_stage(cmake.group(2).strip() or self.detail, percent)
+            return
+        if dependency:
+            component = dependency.group(1).lower()
+            label = NATIVE_COMPONENT_LABELS.get(component)
+            if label:
+                self.recent_output.clear()
+                self.current_download = None
+                self.percent = None
+                self.stage_label = 'Building ' + label
+                self.update_stage('Compiling source', include_context=False)
             return
         if download:
-            key = 'download:' + download.group(1).lower()
-            self.current_download = key
-            self.update_task(key, download.group(1), text)
+            component = download.group(1).lower()
+            label = NATIVE_COMPONENT_LABELS.get(component)
+            if label:
+                self.recent_output.clear()
+                self.current_download = component
+                self.percent = 0
+                self.stage_label = 'Downloading ' + label
+                self.update_stage('Fetching verified source', include_context=False)
             return
-        compile_task = COMPILE_NAME.match(text)
-        if compile_task:
-            name = compile_task.group(2)
-            self.update_task('cargo:' + name, name, compile_task.group(1))
+        if COMPILER_OUTPUT.match(text):
+            self.update_stage(text[:self.MAX_DETAIL_LENGTH])
             return
-        if ACTIVE_STATUS.search(text):
-            self.update_task('build:current', 'Build', text)
+        if (ACTIVE_STATUS.search(text)
+                or re.search(r'(?i)config\.status:\s*linking\b', text)):
+            self.update_stage(text[:self.MAX_DETAIL_LENGTH])
 
     def progress(self, elapsed):
         total_elapsed = int(time.monotonic() - self.started)
         if self.fun_facts and total_elapsed - self.last_fact_elapsed >= 300:
             self.last_fact_elapsed = total_elapsed
-            if self.tty:
-                self.clear_panel()
             self.fact()
         if self.tty:
             self.render_progress(elapsed)
         else:
-            details = '; '.join(
-                f'{task["name"]}: {task["status"]}' for task in list(self.tasks.values())[-2:])
-            suffix = ' — ' + details[:72] if details else ''
+            suffix = ' — ' + self.detail[:48] if self.detail else ''
             print(f'  Working ({elapsed // 60:02}:{elapsed % 60:02}){suffix}',
                   file=self.stream, flush=True)
 
     def finish(self, result):
+        if self.tty:
+            if result:
+                self.phase_result = result
+                self.recent_output = []
+                self.update_stage(result, include_context=False)
+            return
         self.clear_panel()
         if result:
             self.stream.write('  ' + self.paint(result, '1;32' if result == 'Complete' else '1;33') + '\n')
         self.stream.flush()
 
     def intro(self, log_directory):
+        if self.tty:
+            return
         self.stream.write('First setup builds Wine and downloads required components and your game. '
                           'You can resume if interrupted.\n')
         self.stream.write('Logs: ' + str(log_directory) + '\n')
@@ -284,6 +463,35 @@ def setup_reporter():
     if REPORTER is None or REPORTER.stream is not sys.stdout:
         REPORTER = SetupReporter()
     return REPORTER
+
+
+def safe_failure_summary(log):
+    if log is None:
+        return None
+    try:
+        lines = log.read_bytes()[-256 * 1024:].decode('utf-8', errors='replace').splitlines()
+    except OSError:
+        return None
+    candidates = []
+    for raw in reversed(lines):
+        line = ANSI_ESCAPE.sub('', raw).strip()
+        if not (line.startswith('Setup: ')
+                or re.match(r'(?i)^error(?:\[E\d+\])?:\s+', line)
+                or re.match(r'(?i)^Caused by:\s+', line)):
+            continue
+        if SENSITIVE_OUTPUT.search(line):
+            continue
+        line = line.replace(str(Path.home()), '~').replace(str(ROOT), '$SOURCE')
+        line = re.sub(r'https?://\S+', '<URL>', line)
+        line = re.sub(r'(?i)([A-Za-z0-9_-]*(?:token|secret|password|credential|cookie)[A-Za-z0-9_-]*\s*[:=]\s*)\S+',
+                      r'\1<redacted>', line)
+        line = re.sub(r'\s+', ' ', line)
+        line = line[:180]
+        if line not in candidates:
+            candidates.append(line)
+        if len(candidates) == 2:
+            break
+    return ' '.join(reversed(candidates)) or None
 
 
 def module(name):
@@ -364,15 +572,18 @@ def native_dependencies(python, jobs):
         prefix = attempt / 'prefix'
         if os.path.lexists(prefix / 'dependency-manifest.json'):
             dependencies.verify(prefix)
-            print('Native source dependencies — already verified.', flush=True)
+            reporter = setup_reporter()
+            message = 'Native source dependencies — already verified.'
+            if reporter.tty:
+                reporter.begin('Building native source dependencies')
+                reporter.update_stage('Already verified')
+            else:
+                print(message, flush=True)
             return prefix
     # The builder refuses existing compiled outputs. A retry gets one fresh
     # attempt, while earlier source, archives and diagnostics remain available.
     attempt = Path(tempfile.mkdtemp(prefix='attempt-', dir=directory))
     cache = directory / 'download-cache'
-    if cache.exists():
-        print('Checking the persistent source-download cache; every reused archive is SHA-256 verified.',
-              flush=True)
     run([python, str(ROOT / 'tools/build-native-dependencies.py'), '--destination', str(attempt),
          '--cache-dir', str(cache), '--jobs', str(min(jobs, 8)), '--live-output'],
         'Building native source dependencies',
@@ -403,7 +614,7 @@ def run(command, label, log=None):
         except BaseException:
             reporter.finish('')
             raise
-        reporter.finish('')
+        reporter.finish('Complete')
         return
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open('ab') as output:
@@ -461,9 +672,11 @@ def run(command, label, log=None):
             selector.close()
             process.stdout.close()
         if code:
+            reporter.event(f'{label} failed; see the setup log.', failed=True,
+                           cause=safe_failure_summary(log), log=log)
             reporter.finish('')
             raise RuntimeError(f'{label} failed; see the setup log. Reopen Start.command to retry.')
-    reporter.finish('')
+    reporter.finish('Complete')
 
 
 class Steps:
@@ -488,7 +701,12 @@ class Steps:
             try:
                 current = {p: digest(ROOT / p) for p in outputs}
                 if current == receipt.get('outputs'):
-                    print(label + ' — already done.', flush=True)
+                    reporter = setup_reporter()
+                    if reporter.tty:
+                        reporter.begin(label)
+                        reporter.update_stage('Already done')
+                    else:
+                        print(label + ' — already done.', flush=True)
                     self.previous = signature
                     return
             except OSError:
@@ -667,10 +885,21 @@ def cli():
     try:
         return main()
     except KeyboardInterrupt:
-        print('\nStopped. Open Start.command again to retry.', file=sys.stderr)
+        reporter = setup_reporter()
+        message = 'Stopped. Open Start.command again to retry.'
+        if reporter.tty and reporter.panel_rows:
+            reporter.event(message)
+        else:
+            print('\n' + message, file=sys.stderr)
         return 130
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
-        print('Start: ' + str(error), file=sys.stderr)
+        reporter = setup_reporter()
+        message = 'Start: ' + str(error)
+        if not reporter.failure_reported:
+            if reporter.tty and reporter.panel_rows:
+                reporter.event(message, failed=True)
+            else:
+                print(message, file=sys.stderr)
         return 1
 
 
