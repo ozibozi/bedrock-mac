@@ -815,6 +815,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn proprietary_components_require_current_explicit_acceptance() {
+        assert!(!standalone_consent::acceptance_text_is_valid(
+            "EULA_VERSION = 1\nPROPRIETARY_COMPONENTS_ACCEPTED = false\n"));
+        assert!(standalone_consent::acceptance_text_is_valid(
+            "EULA_VERSION = 1\nPROPRIETARY_COMPONENTS_ACCEPTED = true\n"));
+        assert!(!standalone_consent::acceptance_text_is_valid(
+            "EULA_VERSION = 0\nPROPRIETARY_COMPONENTS_ACCEPTED = true\n"));
+        assert!(!standalone_consent::acceptance_text_is_valid(
+            "EULA_VERSION = 1\nPROPRIETARY_COMPONENTS_ACCEPTED = false\nPROPRIETARY_COMPONENTS_ACCEPTED = true\n"));
+    }
+
+    #[test]
     fn parent_receipt_requires_matching_process_and_resolved_executable() {
         let temporary = tempfile::tempdir().unwrap();
         let path = temporary.path().join("session.json");
