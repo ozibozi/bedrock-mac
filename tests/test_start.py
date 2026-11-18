@@ -536,15 +536,16 @@ sys.exit(start.cli())
         reporter.progress(12)
         rendered = output.getvalue()
         self.assertIn('\033[1;36m', rendered)
-        self.assertIn('\033[1A', rendered)
-        frame = rendered.split('\033[1A')[-1]
+        frame = rendered.rsplit('\033[3A', 1)[-1]
         frame = start.ANSI_ESCAPE.sub('', frame)
         rows = [line for line in frame.splitlines() if line.strip()]
-        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(rows), 3)
         self.assertEqual(len({len(row) for row in rows}), 1)
-        self.assertLessEqual(len(rows[0]), 80)
+        self.assertLessEqual(len(rows[0]), reporter.terminal_width)
         self.assertIn('Building GMP', rows[0])
-        self.assertIn('config.status: linking mpn/x', rows[0])
+        self.assertIn('|o o|', rows[0])
+        self.assertIn('|---|', rows[1])
+        self.assertIn('config.status: linking mpn/x86_64', rows[-1])
         self.assertEqual(reporter.stage_label, 'Building GMP')
         self.assertNotIn('################################', frame)
         reporter.finish('')
@@ -557,20 +558,99 @@ sys.exit(start.cli())
             'CCPIC... | checking',
             'if | checking',
             'for | checking',
+            'checking for error.h... no',
             'Build | config.status: linking x86_64/ec',
             'config.status: linking mpn/x86_64',
+            '! /Applications/Xcode.app/Contents/Developer/usr/bin/clang',
+            '! ar cr libfoo.a foo.o',
+            '! libtool -static -o libfoo.a',
+            '! checking for error.h... no',
+            '! -Wno-error=deprecated-declarations',
+            '! -pthread',
         )
         reporter = start.SetupReporter(io.StringIO(), environment={'TERM': 'dumb'})
         reporter.begin('Building native source dependencies')
         for line in examples:
+            previous_detail = reporter.detail
             reporter.output_line(line.encode())
             self.assertEqual(reporter.stage_label, 'Native dependencies')
+            if line.startswith('! ') or line.startswith('checking '):
+                self.assertEqual(reporter.detail, previous_detail)
             if reporter.tasks:
                 self.assertEqual(list(reporter.tasks), ['stage'])
                 self.assertEqual(reporter.tasks['stage']['name'], 'Native dependencies')
                 self.assertNotEqual(reporter.tasks['stage']['name'],
                                     line.split('|', 1)[0].strip())
-            self.assertLessEqual(len(reporter.detail), reporter.STATUS_WIDTH)
+            self.assertLessEqual(len(reporter.detail), reporter.MAX_DETAIL_LENGTH)
+        for line in examples:
+            if line.startswith('! '):
+                self.assertNotIn(line, reporter.stream.getvalue())
+        self.assertNotIn('! ', reporter.stream.getvalue())
+
+    def test_progress_context_keeps_three_recent_safe_lines_and_full_stage_name(self):
+        class TTYCapture(io.StringIO):
+            def isatty(self):
+                return True
+
+        output = TTYCapture()
+        reporter = start.SetupReporter(output, environment={'TERM': 'xterm-256color'})
+        reporter.begin('Building native source dependencies')
+        reporter.output_line(b'Building dependency: libunistring')
+        reporter.output_line(b'CC tls13/finished.lo')
+        reporter.output_line(b'GEN error.h')
+        reporter.output_line(b'CC libgnu_gpl_la-error.lo')
+        reporter.output_line(b'config.status: linking x86_64/ec')
+        reporter.output_line(b'ordinary noisy output')
+        reporter.progress(181)
+
+        self.assertEqual(reporter.stage_label, 'Building libunistring')
+        self.assertEqual(reporter.recent_output, [
+            'GEN error.h',
+            'CC libgnu_gpl_la-error.lo',
+            'config.status: linking x86_64/ec',
+        ])
+        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[5A', 1)[-1])
+        rows = [line for line in frame.splitlines() if line.strip()]
+        self.assertIn('Building libunistring', rows[0])
+        self.assertEqual(len(rows), 5)
+        self.assertTrue(all(len(line) <= reporter.terminal_width for line in rows))
+        self.assertIn('GEN error.h', frame)
+        self.assertIn('config.status: linking x86_64/ec', frame)
+        self.assertNotIn('ordinary noisy output', frame)
+
+    def test_progress_context_clips_details_to_terminal_width(self):
+        class TTYCapture(io.StringIO):
+            def isatty(self):
+                return True
+
+        output = TTYCapture()
+        with patch.object(start.shutil, 'get_terminal_size', return_value=os.terminal_size((76, 24))):
+            reporter = start.SetupReporter(output, environment={'TERM': 'xterm-256color'})
+        reporter.begin('Building native source dependencies')
+        reporter.output_line(b'Building dependency: libunistring')
+        reporter.output_line(('CC ' + 'x' * 300).encode())
+        reporter.progress(60)
+        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[3A', 1)[-1])
+        rows = [line for line in frame.splitlines() if line.strip()]
+        self.assertIn('Building libunistring', rows[0])
+        self.assertLessEqual(len(rows[-1]), 76)
+        self.assertLess(len(rows[-1]), 100)
+
+    def test_creeper_indicator_uses_known_download_progress(self):
+        class TTYCapture(io.StringIO):
+            def isatty(self):
+                return True
+
+        output = TTYCapture()
+        reporter = start.SetupReporter(output, environment={'TERM': 'xterm-256color'})
+        reporter.begin('Building native source dependencies')
+        reporter.output_line(b'Downloading source archive: freetype')
+        reporter.output_line(b'################################ 42.6%')
+        reporter.progress(10)
+
+        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[3A', 1)[-1])
+        self.assertIn('|o o|  43% | Downloading FreeType', frame)
+        self.assertIn('|#--|', frame)
 
     def test_autoconf_probe_exclamation_is_detail_not_a_failure_event(self):
         class TTYCapture(io.StringIO):
@@ -584,9 +664,10 @@ sys.exit(start.cli())
                  '/Applications/Xcode.app/Contents/Developer/usr/bin/ld')
         reporter.output_line(probe.encode())
 
-        self.assertTrue(reporter.detail.startswith('! checking if we should use'))
+        self.assertEqual(reporter.detail, 'Working')
         self.assertEqual(reporter.stage_label, 'Native dependencies')
         self.assertNotIn(reporter.paint('!', '1;31'), output.getvalue())
+        self.assertNotIn(probe, output.getvalue())
 
     def test_nonzero_process_exit_is_reported_as_failure(self):
         read_fd, write_fd = os.pipe()
@@ -671,6 +752,8 @@ sys.exit(start.cli())
         reporter.finish('Complete')
         self.assertNotRegex(output.getvalue(), r'\x1b\[[0-9;]*m')
         self.assertIn('Fun fact:', output.getvalue())
+        self.assertIn('|o o|', output.getvalue())
+        self.assertIn('|---|', output.getvalue())
 
     def test_source_update_refreshes_generated_helper_before_existing_tree_verification(self):
         source = Path(__file__).resolve().parents[1]

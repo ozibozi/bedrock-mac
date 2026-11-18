@@ -11,6 +11,7 @@ from pathlib import Path
 import platform
 import re
 import selectors
+import shutil
 import signal
 import subprocess
 import sys
@@ -43,15 +44,13 @@ ANSI_ESCAPE = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
 SENSITIVE_OUTPUT = re.compile(
     r'(?i)\b(?:authorization|access[_ -]?token|refresh[_ -]?token|token|client[_ -]?secret|'
     r'secret|credential|password|cookie|bearer)\b|https?://\S+')
-BUILD_STATUS = re.compile(
-    r'(?i)\b(?:compiling|checking|downloading|installing|building|generating|linking|'
-    r'finished|verified|reusing|resuming|discarded|extracting|configuring|error|failed|'
-    r'retrying|curl:)\b')
-COMPLETED_STATUS = re.compile(r'(?i)\b(?:finished|verified|reusing|reused|discarded|complete(?:d)?|installed)\b')
-ERROR_STATUS = re.compile(r'(?i)\b(?:error|failed|curl:)\b')
+COMPLETED_STATUS = re.compile(
+    r'(?i)^\s*(?:finished|verified|reusing|reused|discarded|complete(?:d)?|installed)\b')
 ACTIVE_STATUS = re.compile(
-    r'(?i)\b(?:compiling|checking|downloading|installing|building|generating|linking|'
+    r'(?i)^\s*(?:compiling|checking|downloading|installing|building|generating|linking|'
     r'resuming|extracting|configuring|retrying)\b')
+CONFIGURE_PROBE = re.compile(r'(?i)^\s*checking\b')
+COMPILER_OUTPUT = re.compile(r'(?i)^(?:CC|CXX|GEN|LD|LINK)\s+\S')
 CURL_PROGRESS = re.compile(r'^\s*#+.*\b\d{1,3}(?:\.\d+)?%')
 CMAKE_PROGRESS = re.compile(r'\[\s*\d{1,3}%\]')
 CURL_PERCENT = re.compile(r'\b(\d{1,3}(?:\.\d+)?)%')
@@ -74,10 +73,9 @@ CMAKE_PERCENT = re.compile(r'\[\s*(\d{1,3})%\]\s*(.*)')
 class SetupReporter:
     """Render truthful, optionally colorful stage progress for an interactive terminal."""
 
-    BAR_WIDTH = 10
     MAX_ROWS = 4
-    NAME_WIDTH = 20
-    STATUS_WIDTH = 28
+    CONTEXT_LINES = 3
+    MAX_DETAIL_LENGTH = 240
 
     def __init__(self, stream=None, *, fun_facts=False, environment=None):
         self.stream = sys.stdout if stream is None else stream
@@ -89,6 +87,7 @@ class SetupReporter:
         self.tty = bool(is_tty and environment.get('TERM') != 'dumb')
         self.color = bool(self.tty and not environment.get('NO_COLOR')
                           and environment.get('CLICOLOR') != '0')
+        self.terminal_width = min(140, shutil.get_terminal_size((100, 24)).columns)
         self.fun_facts = fun_facts
         self.fact_index = 0
         self.last_fact_elapsed = 0
@@ -99,6 +98,7 @@ class SetupReporter:
         self.stage_label = 'Setup'
         self.detail = 'Working'
         self.percent = None
+        self.recent_output = []
         self.panel_rows = 0
         self.non_tty_buckets = {}
         self.last_non_tty_update = 0
@@ -124,9 +124,10 @@ class SetupReporter:
             'Downloading Minecraft': 'Minecraft download',
             'Preparing Minecraft': 'Minecraft setup',
             'Starting Minecraft': 'Minecraft launch',
-        }.get(label, label)[:self.NAME_WIDTH]
+        }.get(label, label)
         self.detail = 'Working'
         self.percent = None
+        self.recent_output.clear()
         self.non_tty_buckets.clear()
         self.last_non_tty_update = 0
         self.stage_started = time.monotonic()
@@ -154,7 +155,7 @@ class SetupReporter:
 
     def update_task(self, key, name, status, percent=None):
         self.tasks.pop(key, None)
-        self.tasks[key] = {'name': name[:18], 'status': status, 'percent': percent}
+        self.tasks[key] = {'name': name, 'status': status, 'percent': percent}
         while len(self.tasks) > self.MAX_ROWS:
             self.tasks.pop(next(iter(self.tasks)))
         if self.tty:
@@ -162,8 +163,12 @@ class SetupReporter:
         else:
             self.non_tty_update(key, percent)
 
-    def update_stage(self, status, percent=None):
-        self.detail = status[:self.STATUS_WIDTH]
+    def update_stage(self, status, percent=None, *, include_context=True):
+        self.detail = status[:self.MAX_DETAIL_LENGTH]
+        if (include_context and status
+                and (not self.recent_output or self.recent_output[-1] != self.detail)):
+            self.recent_output.append(self.detail)
+            self.recent_output = self.recent_output[-self.CONTEXT_LINES:]
         if percent is not None:
             self.percent = percent
         self.tasks.clear()
@@ -185,20 +190,32 @@ class SetupReporter:
         for task in tasks:
             percent = task['percent']
             if percent is None:
-                segment = 3
-                offset = self.spinner_index % (self.BAR_WIDTH - segment + 1)
+                eyes = 'O' if self.spinner_index % 2 else 'o'
                 self.spinner_index += 1
-                bar = '-' * offset + '=' * segment + '-' * (self.BAR_WIDTH - offset - segment)
+                face = f'|{eyes} {eyes}|'
+                mouth = '|---|'
                 percent_text = ' --%'
             else:
-                filled = round(self.BAR_WIDTH * percent / 100)
-                bar = '#' * filled + '-' * (self.BAR_WIDTH - filled)
+                filled = round(3 * percent / 100)
+                face = '|o o|'
+                mouth = '|' + '#' * filled + '-' * (3 - filled) + '|'
                 percent_text = f'{round(percent):3}%'
-            status = task['status'][:self.STATUS_WIDTH]
-            row = (f'  {self.paint(bar, "36")} {percent_text} | '
-                   f'{task["name"]:<{self.NAME_WIDTH}} | {status:<{self.STATUS_WIDTH}} | '
-                   f'{elapsed // 60:02}:{elapsed % 60:02}')
-            rows.append(row)
+            elapsed_text = f'{elapsed // 60:02}:{elapsed % 60:02}'
+            name_width = max(1, self.terminal_width - (2 + len(face) + 1
+                                                       + len(percent_text) + 3 + 3
+                                                       + len(elapsed_text)))
+            name = task['name'][:name_width]
+            row = (f'  {self.paint(face, "36")} {percent_text} | '
+                   f'{name} | {elapsed_text}')
+            visible_width = len(ANSI_ESCAPE.sub('', row))
+            rows.append(row + ' ' * max(0, self.terminal_width - visible_width))
+            mouth_row = '  ' + self.paint(mouth, '36')
+            rows.append(mouth_row + ' ' * max(
+                0, self.terminal_width - len(ANSI_ESCAPE.sub('', mouth_row))))
+        details = self.recent_output[-self.CONTEXT_LINES:] or [self.detail]
+        detail_width = max(1, self.terminal_width - 4)
+        rows.extend(('    ' + line[:detail_width])[:self.terminal_width].ljust(self.terminal_width)
+                    for line in details)
         old_rows = self.panel_rows
         target_rows = max(old_rows, len(rows))
         if old_rows:
@@ -241,10 +258,14 @@ class SetupReporter:
         text = ''.join(character for character in text
                        if character.isprintable() or character == '\t')
         text = ' '.join(text.split())
-        if not text or SENSITIVE_OUTPUT.search(text):
+        if not text or text.startswith('!') or SENSITIVE_OUTPUT.search(text):
             return
-        if not (BUILD_STATUS.search(text) or CURL_PROGRESS.match(text)
-                or CMAKE_PROGRESS.search(text)):
+        if (CONFIGURE_PROBE.match(text)
+                or not (COMPLETED_STATUS.match(text) or DOWNLOAD_NAME.search(text)
+                        or RESUME_NAME.search(text) or CURL_PROGRESS.match(text)
+                        or CMAKE_PROGRESS.search(text) or ACTIVE_STATUS.match(text)
+                        or COMPILER_OUTPUT.match(text)
+                        or re.search(r'(?i)^config\.status:\s*linking\b', text))):
             return
         text = text.replace(str(Path.home()), '~').replace(str(ROOT), '$SOURCE')
         completed = bool(COMPLETED_STATUS.search(text))
@@ -256,7 +277,7 @@ class SetupReporter:
                 self.current_download = None
                 self.stage_label = 'Native dependencies'
                 self.percent = None
-                self.update_stage('Preparing source builds')
+                self.update_stage('Preparing source builds', include_context=False)
             elif 'Verified dependency prefix' in text:
                 self.percent = None
                 self.detail = 'Verified'
@@ -280,23 +301,28 @@ class SetupReporter:
             component = dependency.group(1).lower()
             label = NATIVE_COMPONENT_LABELS.get(component)
             if label:
+                self.recent_output.clear()
                 self.current_download = None
                 self.percent = None
-                self.stage_label = ('Building ' + label)[:self.NAME_WIDTH]
-                self.update_stage('Compiling source')
+                self.stage_label = 'Building ' + label
+                self.update_stage('Compiling source', include_context=False)
             return
         if download:
             component = download.group(1).lower()
             label = NATIVE_COMPONENT_LABELS.get(component)
             if label:
+                self.recent_output.clear()
                 self.current_download = component
                 self.percent = 0
-                self.stage_label = ('Downloading ' + label)[:self.NAME_WIDTH]
-                self.update_stage('Fetching verified source')
+                self.stage_label = 'Downloading ' + label
+                self.update_stage('Fetching verified source', include_context=False)
             return
-        if (ACTIVE_STATUS.search(text) or ERROR_STATUS.search(text)
+        if COMPILER_OUTPUT.match(text):
+            self.update_stage(text[:self.MAX_DETAIL_LENGTH])
+            return
+        if (ACTIVE_STATUS.search(text)
                 or re.search(r'(?i)config\.status:\s*linking\b', text)):
-            self.update_stage(text)
+            self.update_stage(text[:self.MAX_DETAIL_LENGTH])
 
     def progress(self, elapsed):
         total_elapsed = int(time.monotonic() - self.started)
