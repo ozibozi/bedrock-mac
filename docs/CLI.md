@@ -2,6 +2,14 @@
 
 This setup obtains each user's Windows Bedrock game through their own Microsoft account. It does not use CrossOver or distribute Minecraft, Microsoft runtime binaries, credentials, or licenses.
 
+Before any direct game or Microsoft-runtime acquisition/preparation command,
+review the repository's [EULA.md](../EULA.md) and manually change
+`PROPRIETARY_COMPONENTS_ACCEPTED = false` to `true`. The gate defaults to
+disabled and also applies to direct helper and legacy launch commands.
+Read-only checks, dry runs, helper compilation, and sign-out do not require
+acceptance. This local opt-in does not grant vendor licenses or bypass
+Microsoft account ownership checks.
+
 This is the developer/reference CLI guide. Players should start with the
 [user guide](USER_GUIDE.md); for a complete build from a fresh checkout,
 follow [local development](DEVELOPMENT.md). Commands here use checkout data

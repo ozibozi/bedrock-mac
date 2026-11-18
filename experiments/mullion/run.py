@@ -179,6 +179,7 @@ def launch_game():
         spec.loader.exec_module(normal)
     finally:
         os.environ.update(saved)
+    normal.require_proprietary_acceptance()
     helper = None
     helper_log = None
     owned_socket = None

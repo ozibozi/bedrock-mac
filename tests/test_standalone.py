@@ -16,6 +16,11 @@ spec.loader.exec_module(standalone)
 
 
 class IsolationTests(unittest.TestCase):
+    def setUp(self):
+        acceptance = patch.object(standalone, 'require_proprietary_acceptance')
+        acceptance.start()
+        self.addCleanup(acceptance.stop)
+
     def test_source_code_paths_are_independent_of_selected_data_home(self):
         source = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {'BEDROCK_HOME': temporary}):

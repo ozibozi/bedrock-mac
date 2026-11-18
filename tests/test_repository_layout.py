@@ -15,6 +15,12 @@ spec.loader.exec_module(exporter)
 
 
 class RepositoryLayoutTests(unittest.TestCase):
+    def test_start_command_gates_rosetta_install_before_vendor_prompt(self):
+        script = (ROOT / 'Start.command').read_text()
+        acceptance = script.index('client/proprietary_consent.py')
+        install = script.index('/usr/sbin/softwareupdate --install-rosetta')
+        self.assertLess(acceptance, install)
+
     def test_exported_entry_points_are_independent_of_cwd_and_installed_data(self):
         with tempfile.TemporaryDirectory(prefix='bedrock layout ') as temporary:
             base = Path(temporary)
@@ -31,7 +37,8 @@ class RepositoryLayoutTests(unittest.TestCase):
                              'tools/export-source.py', 'tools/build-native-dependencies.py',
                              'tools/build-release-runtime.py', 'tools/package-launcher.py',
                              'tools/build-dmg.py', 'client/standalone.py',
-                             'client/standalone-setup.py', 'client/standalone-gameinput.py'):
+                             'client/standalone-setup.py', 'client/standalone-gameinput.py',
+                             'client/proprietary_consent.py'):
                 with self.subTest(entry_point=relative):
                     result = subprocess.run([sys.executable, '-B', str(source / relative), '--help'],
                                             cwd=base, env=env, capture_output=True, text=True, timeout=10)
@@ -40,7 +47,7 @@ class RepositoryLayoutTests(unittest.TestCase):
             result = subprocess.run([sys.executable, '-B', str(source / 'tools/start.py'), '--check'],
                                     cwd=base, env=env, capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 1, result.stderr)
-            self.assertIn('Setup needed', result.stdout)
+            self.assertIn('Proprietary components are disabled', result.stdout)
             self.assertEqual(before, {str(p.relative_to(source)) for p in source.rglob('*')})
             self.assertEqual(sentinel.read_bytes(), b'leave installed data alone')
             self.assertEqual(set(home.iterdir()), {sentinel})

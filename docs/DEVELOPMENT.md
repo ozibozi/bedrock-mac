@@ -85,10 +85,46 @@ pkg-config --version
 /usr/bin/arch -x86_64 /usr/bin/true
 ```
 
-The last command must exit successfully for the Intel runtime to work. If
-Rosetta is missing, follow [Apple's instructions](https://support.apple.com/en-us/102527).
-The native app only checks for Rosetta. `Start.command` can request Apple’s
+The last command must exit successfully for the current Intel runtime to work.
+It only proves that this x86-64 probe can start; it does not establish that
+Wine, DXMT or the game is eligible under macOS 28's narrower Rosetta policy.
+Apple's [Rosetta instructions](https://support.apple.com/en-us/102527) describe
+general availability through macOS 27 and a limited game exception starting
+with macOS 28. The Windows 11 ARM route is only an OSS feasibility
+investigation; no VM or graphics adapter replaces the existing Wine path or
+launches Bedrock. See
+[the Windows ARM migration status](COMPATIBILITY.md#macos-28-and-windows-11-arm).
+The compatibility entry records QEMU TCG/UTM/DXMT as an unverified candidate,
+not a supported setup; OSS components are preferred where practical, and any
+vendor-proprietary component requires the user's own license and EULA opt-in.
+Before the existing setup path downloads Microsoft
+game/runtime files, the user must review `EULA.md` and manually enable its
+acceptance setting. The separate GPL `LICENSE` remains unchanged, and the
+acceptance setting never replaces the ownership check.
+The native app only checks the x86-64 probe. `Start.command` can request Apple’s
 Rosetta installer during source setup; the user handles its license prompt.
+
+### Python-free Rust migration status
+
+The bundled player does not require a separate Python installation, but its
+PyInstaller-frozen worker embeds Python. Source startup currently begins with
+Apple's Python, then selects Homebrew Python 3.13 for build/helper work; the
+packaging recipe uses a Python 3.12+ virtual environment, recommends Python
+3.14, and CI tests Python 3.12 and 3.14. The account helper uses Rust 1.98.0.
+These are separate toolchains; the repository does not establish a direct
+Python/Rust version conflict. Multiple Python selections and stale virtual
+environments can explain interpreter mismatches, but are not proof of the
+reported conflict.
+
+The firm migration target is to remove Python from the shipped app and the
+player-facing setup, download, game preparation, monitoring and lifecycle
+path. Rust already owns account and license checks; the remaining operational
+ownership has not yet been ported, and the EULA checker still runs in Python.
+Keep the macOS 27 Wine path working until a Rust replacement passes equivalent
+behavioral and data-preservation tests. Migrate relevant test/release scripts
+to Rust or shell where reasonably practical, without porting unrelated
+research tools. Any retained build-only Python must have a concrete, documented
+toolchain dependency; no such exception is established as the final design.
 
 ### Build paths
 

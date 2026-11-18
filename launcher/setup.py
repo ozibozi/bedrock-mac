@@ -32,7 +32,8 @@ if BUNDLE:
 # or developer tools are required on the user's Mac.
 if FROZEN and len(sys.argv) > 1 and sys.argv[1].endswith('.py'):
     script = Path(sys.argv[1]).resolve()
-    allowed = {'standalone.py', 'standalone-setup.py', 'standalone-gameinput.py'}
+    allowed = {'standalone.py', 'standalone-setup.py', 'standalone-gameinput.py',
+               'proprietary_consent.py'}
     if script.name not in allowed or script.parent != Path(os.environ.get('BEDROCK_HOME', '')).resolve():
         raise SystemExit('Unknown bundled script')
     sys.argv = sys.argv[1:]
@@ -94,6 +95,22 @@ def load(name, filename):
     return module
 
 
+def proprietary_consent():
+    source = BUNDLE / 'scripts/proprietary_consent.py' if BUNDLE else \
+        SOURCE_ROOT / 'client/proprietary_consent.py'
+    spec = importlib.util.spec_from_file_location('bedrock_proprietary_consent', source)
+    if spec is None or spec.loader is None:
+        raise RuntimeError('The proprietary-component acceptance checker is missing.')
+    module = importlib.util.module_from_spec(spec)
+    previous = sys.dont_write_bytecode
+    try:
+        sys.dont_write_bytecode = True
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = previous
+    return module
+
+
 def replace_bytes(target, contents):
     """Replace one file without opening or overwriting an existing staging path."""
     descriptor, name = tempfile.mkstemp(prefix='.' + target.name + '-', dir=target.parent)
@@ -112,13 +129,22 @@ def initialize_bundle():
     if not BUNDLE:
         return
     ROOT.mkdir(parents=True, exist_ok=True)
-    for filename in ('standalone.py', 'standalone-setup.py', 'standalone-gameinput.py', 'standalone-pickers.py', 'winrt.reg'):
+    for filename in ('standalone.py', 'standalone-setup.py', 'standalone-gameinput.py',
+                     'standalone-pickers.py', 'proprietary_consent.py', 'winrt.reg'):
         source = BUNDLE / 'scripts' / filename
         target = ROOT / filename
         if target.is_symlink():
             raise RuntimeError('An unexpected file blocks app setup: ' + filename)
         if not target.exists() or target.read_bytes() != source.read_bytes():
             replace_bytes(target, source.read_bytes())
+    eula = ROOT / 'EULA.md'
+    if eula.is_symlink():
+        raise RuntimeError('An unexpected file blocks app setup: EULA.md')
+    if not eula.exists():
+        source = BUNDLE / 'EULA.md'
+        if not source.is_file():
+            raise RuntimeError('The packaged EULA.md is missing.')
+        replace_bytes(eula, source.read_bytes())
     for relative, bundled in BUNDLE_LINKS.items():
         destination = ROOT / relative
         target = BUNDLE / bundled
@@ -133,16 +159,18 @@ def initialize_bundle():
 
 
 def installed():
-    if not script_path('standalone.py').is_file():
-        return False
-    # Status must describe this app's components, not an older app that still
-    # owns the data directory's links. Only Play is allowed to change the links.
-    if BUNDLE and any(not (ROOT / relative).is_symlink()
-                      or (ROOT / relative).resolve() != (BUNDLE / bundled).resolve()
-                      for relative, bundled in BUNDLE_LINKS.items()):
-        return False
-    runtime = load('standalone', 'standalone.py')
     try:
+        if not proprietary_consent().acceptance_status(ROOT)[0]:
+            return False
+        if not script_path('standalone.py').is_file():
+            return False
+        # Status must describe this app's components, not an older app that still
+        # owns the data directory's links. Only Play is allowed to change the links.
+        if BUNDLE and any(not (ROOT / relative).is_symlink()
+                          or (ROOT / relative).resolve() != (BUNDLE / bundled).resolve()
+                          for relative, bundled in BUNDLE_LINKS.items()):
+            return False
+        runtime = load('standalone', 'standalone.py')
         runtime.prerequisites(ROOT / 'game')
         return runtime.HELPER.is_file() and runtime.setup_matches(runtime.setup_signature(ROOT / 'game'))
     except (OSError, RuntimeError):
@@ -386,6 +414,7 @@ def update_account(runtime, destination, market='CA'):
 
 
 def update_minecraft(runtime, log, market='CA'):
+    proprietary_consent().require_acceptance(ROOT)
     transaction, game, prefix = update_paths()
     # Both profiles reject a different game hash even with their gate disabled.
     # Keep the playable installation intact until the source developer restores
@@ -465,6 +494,11 @@ def main():
         if os.path.lexists(ROOT / '.minecraft-update'):
             event('update', 'Finish Minecraft update', 'Choose Continue to recover the interrupted update.')
             return
+        accepted, reason = proprietary_consent().acceptance_status(ROOT)
+        if not accepted:
+            event('new', 'Minecraft on your Mac',
+                  'Review EULA.md and enable its acceptance setting. ' + reason + '.')
+            return
         ready = installed()
         if ready:
             event('ready', 'Ready to play')
@@ -503,6 +537,7 @@ def main():
                     'Could not sign out. Close Minecraft and try again.', account_progress=True)
                 event('ready' if ready else 'new', 'Signed out', 'Choose Play to sign in with another Microsoft account.' if ready else '')
                 return
+            proprietary_consent().require_acceptance(ROOT)
             validate_install()
             if (ROOT / 'game').exists() and not (ROOT / 'game/Minecraft.Windows.exe').is_file():
                 raise RuntimeError('The game installation is incomplete. Choose Update Minecraft from the app menu to repair it. Your worlds will be kept.')

@@ -58,6 +58,21 @@ def sha256(path):
     return h.hexdigest()
 
 
+def require_proprietary_acceptance():
+    source = SCRIPTS / 'proprietary_consent.py'
+    spec = importlib.util.spec_from_file_location('bedrock_proprietary_consent', source)
+    if spec is None or spec.loader is None:
+        raise RuntimeError('The proprietary-component acceptance checker is missing.')
+    consent = importlib.util.module_from_spec(spec)
+    previous = sys.dont_write_bytecode
+    try:
+        sys.dont_write_bytecode = True
+        spec.loader.exec_module(consent)
+    finally:
+        sys.dont_write_bytecode = previous
+    consent.require_acceptance(ROOT)
+
+
 def account_pid():
     for state, expected in ((STATE, HELPER), (ROOT / 'runtime/helper-session.json', OLD_HELPER)):
         try:
@@ -149,6 +164,7 @@ def recover_account_socket():
 
 @contextlib.contextmanager
 def account(game, market='CA', *, download=False, progress=None, timeout=None):
+    require_proprietary_acceptance()
     process = None
     output = None
     failure_code = None
@@ -470,6 +486,7 @@ def import_winrt_registry(game, log):
 
 
 def prepare(game):
+    require_proprietary_acceptance()
     prerequisites(game)
     if PREFIX.is_symlink() or PREFIX.resolve() == (ROOT / 'bottles/Bedrock-Mac').resolve():
         raise RuntimeError('The standalone prefix must be a separate directory.')
@@ -573,6 +590,7 @@ def main():
         except BlockingIOError:
             raise RuntimeError('Another standalone setup or game session is running.')
         refuse_pending_update()
+        require_proprietary_acceptance()
         if args.command == 'launch' and game_running():
             print('Minecraft is already running. Close it before testing the standalone launcher.')
             return 0

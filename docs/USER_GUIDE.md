@@ -22,6 +22,14 @@ apply to a complete bundle.
 - An internet connection and a Microsoft account that owns **Minecraft for
   Windows**. Ownership only on a console or phone does not establish that PC
   entitlement. The launcher checks the account's actual license with Microsoft.
+- Review [EULA.md](../EULA.md) before setup. Proprietary downloads/use are
+  disabled until you manually set
+  `PROPRIETARY_COMPONENTS_ACCEPTED = true`. For the source setup, edit the
+  checkout's `EULA.md`; the packaged app copies its default to the data folder
+  on first Play and stops before downloading anything, so edit
+  `~/Library/Application Support/Bedrock for Mac/EULA.md` and retry. This
+  records additional acceptance only; it does not grant a license or bypass
+  Microsoft ownership verification.
 - At least 8 GB free for game setup; leave more room for worlds, backups, and
   temporary files. This is not the storage budget for compiling the project.
 

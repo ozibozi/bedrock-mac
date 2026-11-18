@@ -2,6 +2,7 @@
 """Launch the owned Windows game and its local account helper."""
 from pathlib import Path
 import datetime
+import importlib.util
 import json
 import os
 import signal
@@ -15,6 +16,25 @@ HELPER = ROOT / 'sources/xodus/target/release/examples/bedrock_helper'
 GAME = ROOT / 'game/Minecraft.Windows.exe'
 STATE = ROOT / 'runtime/helper-session.json'
 SOCKET = Path('/tmp/xodus.sock')
+
+
+def proprietary_consent():
+    source = ROOT / 'client/proprietary_consent.py'
+    spec = importlib.util.spec_from_file_location('bedrock_proprietary_consent', source)
+    if spec is None or spec.loader is None:
+        raise RuntimeError('The proprietary-component acceptance checker is missing.')
+    consent = importlib.util.module_from_spec(spec)
+    previous = sys.dont_write_bytecode
+    try:
+        sys.dont_write_bytecode = True
+        spec.loader.exec_module(consent)
+    finally:
+        sys.dont_write_bytecode = previous
+    return consent
+
+
+def require_proprietary_acceptance():
+    proprietary_consent().require_acceptance(ROOT)
 
 
 def helper_pid():
@@ -49,12 +69,17 @@ def main():
         if not path.is_file():
             raise RuntimeError('Missing required file: ' + str(path))
     if '--check' in sys.argv:
+        accepted, reason = proprietary_consent().acceptance_status(ROOT)
+        print('Proprietary components accepted:', accepted)
+        if not accepted:
+            print('Acceptance required: ' + reason)
         with GAME.open('rb') as f:
             prepared = f.read(2) == b'MZ'
         print('Game prepared:', prepared)
         print('Account helper running:', bool(helper_pid()))
         print('Account socket ready:', ready())
         return 0
+    require_proprietary_acceptance()
     processes = subprocess.check_output(['/bin/ps', '-axo', 'comm='], text=True)
     if any(line.strip().lower().endswith('\\minecraft.windows.exe') for line in processes.splitlines()):
         print('Minecraft is already running.')

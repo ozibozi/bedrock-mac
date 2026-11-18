@@ -26,6 +26,12 @@ class StartTests(unittest.TestCase):
         self.root = Path(temporary.name)
         for directory in ('client', 'tools', 'config'):
             (self.root / directory).mkdir()
+        source = Path(__file__).resolve().parents[1]
+        (self.root / 'client/proprietary_consent.py').write_bytes(
+            (source / 'client/proprietary_consent.py').read_bytes())
+        (self.root / 'EULA.md').write_text((source / 'EULA.md').read_text().replace(
+            'PROPRIETARY_COMPONENTS_ACCEPTED = false',
+            'PROPRIETARY_COMPONENTS_ACCEPTED = true'))
         self.root_patch = patch.object(start, 'ROOT', self.root)
         self.root_patch.start()
         self.addCleanup(self.root_patch.stop)
