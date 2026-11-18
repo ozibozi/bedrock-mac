@@ -348,7 +348,7 @@ sys.exit(start.cli())
         self.assertIn('Start: fixture setup failure', error.getvalue())
         self.assertNotIn('Traceback', error.getvalue())
 
-    def test_cli_keeps_handled_tty_failure_inside_eight_line_panel(self):
+    def test_cli_keeps_handled_tty_failure_inside_eleven_line_panel(self):
         class TTYCapture(io.StringIO):
             def isatty(self):
                 return True
@@ -362,9 +362,9 @@ sys.exit(start.cli())
                 contextlib.redirect_stderr(io.StringIO()) as error:
             self.assertEqual(start.cli(), 1)
 
-        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[8A', 1)[-1])
+        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[11A', 1)[-1])
         rows = [line for line in frame.splitlines() if line.strip()]
-        self.assertEqual(len(rows), 8)
+        self.assertEqual(len(rows), 11)
         self.assertIn('Start: fixture setup failure', output.getvalue())
         self.assertEqual(error.getvalue(), '')
 
@@ -384,9 +384,9 @@ sys.exit(start.cli())
                 contextlib.redirect_stderr(io.StringIO()) as error:
             self.assertEqual(start.cli(), 1)
 
-        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[8A', 1)[-1])
+        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[11A', 1)[-1])
         rows = [line for line in frame.splitlines() if line.strip()]
-        self.assertEqual(len(rows), 8)
+        self.assertEqual(len(rows), 11)
         self.assertEqual(frame.count('FAILED'), 1)
         self.assertNotIn('Start: already reported', output.getvalue())
         self.assertEqual(error.getvalue(), '')
@@ -588,22 +588,23 @@ sys.exit(start.cli())
         reporter.progress(12)
         rendered = output.getvalue()
         self.assertIn('\033[2J\033[H', rendered)
-        frame = rendered.rsplit('\033[8A', 1)[-1]
+        frame = rendered.rsplit('\033[11A', 1)[-1]
         frame = start.ANSI_ESCAPE.sub('', frame)
         rows = [line for line in frame.splitlines() if line.strip()]
-        self.assertEqual(len(rows), 8)
+        self.assertEqual(len(rows), 11)
         self.assertEqual(len({reporter.display_width(row) for row in rows}), 1)
         self.assertTrue(all(reporter.display_width(row) <= reporter.terminal_width for row in rows))
-        self.assertEqual(rows[0].split('   | ', 1)[0].strip(), reporter.CREEPER_UNICODE[0])
+        self.assertEqual(rows[0].split('   | ', 1)[0].strip(), reporter.CREEPER_START[0])
         self.assertIn('Building GMP', rows[0].split('   | ', 1)[1])
         self.assertIn('config.status: linking mpn/x86_64', rows[1].split('   | ', 1)[1])
         self.assertEqual(tuple(row.split('   | ', 1)[0].strip() for row in rows),
-                         reporter.CREEPER_UNICODE)
-        self.assertIn('🟩', rendered)
+                         reporter.CREEPER_START)
+        self.assertIn('█', rendered)
         self.assertEqual(rendered.count('\033[2J'), 1)
         self.assertEqual(reporter.stage_label, 'Building GMP')
         self.assertNotIn('################################', frame)
         self.assertNotIn('Building native source dependencies\n', frame)
+        self.assertIn('\033[1;32m', rendered)
         reporter.finish('')
 
     def test_completed_build_stage_replaces_unknown_progress_status(self):
@@ -617,12 +618,16 @@ sys.exit(start.cli())
             start.run(['/bin/true'], 'Preparing build tools')
 
         command.assert_called_once()
-        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[8A', 1)[-1])
+        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[11A', 1)[-1])
         self.assertIn('Preparing build tools | 00:00 | Complete', frame)
         self.assertNotIn('--%', frame)
         self.assertNotIn('Working', frame)
+        rows = [line for line in frame.splitlines() if line.strip()]
+        self.assertEqual(
+            tuple(row.split('   | ', 1)[0].strip() for row in rows),
+            ('',) + start.SetupReporter.CREEPER_UNICODE + ('', ''))
 
-    def test_stage_changes_reuse_eight_line_panel_without_heading(self):
+    def test_stage_changes_reuse_eleven_line_panel_without_heading(self):
         class TTYCapture(io.StringIO):
             def isatty(self):
                 return True
@@ -632,13 +637,13 @@ sys.exit(start.cli())
         reporter.begin('Building native source dependencies')
         reporter.begin('Building the Windows compatibility runtime')
 
-        self.assertEqual(reporter.panel_rows, 8)
+        self.assertEqual(reporter.panel_rows, 11)
         self.assertEqual(output.getvalue().count('\033[2J'), 1)
         self.assertNotIn('\nBuilding the Windows compatibility runtime\n',
                          output.getvalue())
-        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[8A', 1)[-1])
+        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[11A', 1)[-1])
         rows = [line for line in frame.splitlines() if line.strip()]
-        self.assertEqual(len(rows), 8)
+        self.assertEqual(len(rows), 11)
         self.assertIn('Wine runtime', rows[0])
         self.assertIn('Applies WineGDK patches', rows[1])
 
@@ -701,9 +706,9 @@ sys.exit(start.cli())
             'CC libgnu_gpl_la-error.lo',
             'config.status: linking x86_64/ec',
         ])
-        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[8A', 1)[-1])
+        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[11A', 1)[-1])
         rows = [line for line in frame.splitlines() if line.strip()]
-        self.assertEqual(len(rows), 8)
+        self.assertEqual(len(rows), 11)
         self.assertIn('Building libunistring', rows[0])
         self.assertIn('CC libgnu_gpl_la-error.lo', rows[2])
         self.assertIn('config.status: linking x86_64/ec', rows[3])
@@ -722,9 +727,9 @@ sys.exit(start.cli())
         reporter.output_line(b'Building dependency: libunistring')
         reporter.output_line(('CC ' + 'x' * 300).encode())
         reporter.progress(60)
-        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[8A', 1)[-1])
+        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[11A', 1)[-1])
         rows = [line for line in frame.splitlines() if line.strip()]
-        self.assertEqual(len(rows), 8)
+        self.assertEqual(len(rows), 11)
         self.assertTrue(all(reporter.display_width(line) <= 30 for line in rows))
         self.assertIn('Build', rows[0])
         self.assertNotIn('ordinary noisy output', frame)
@@ -739,10 +744,10 @@ sys.exit(start.cli())
             reporter = start.SetupReporter(output, environment={'TERM': 'xterm-256color'})
         reporter.begin('Building native source dependencies')
 
-        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[8A', 1)[-1])
+        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[11A', 1)[-1])
         rows = [line for line in frame.splitlines() if line.strip()]
         self.assertFalse(reporter.unicode_creeper)
-        self.assertEqual(len(rows), 8)
+        self.assertEqual(len(rows), 11)
         self.assertTrue(all(reporter.display_width(line) == 20 for line in rows))
         self.assertIn('########', rows[0])
 
@@ -758,13 +763,103 @@ sys.exit(start.cli())
         reporter.output_line(b'################################ 42.6%')
         reporter.progress(10)
 
-        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[8A', 1)[-1])
+        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[11A', 1)[-1])
         rows = [line for line in frame.splitlines() if line.strip()]
-        self.assertEqual(len(rows), 8)
+        self.assertEqual(len(rows), 11)
         self.assertIn('Downloading FreeType', rows[0].split('   | ', 1)[1])
-        self.assertEqual(tuple(row.split('   | ', 1)[0].strip() for row in rows),
-                         reporter.CREEPER_UNICODE)
+        art = tuple(row.split('   | ', 1)[0].strip() for row in rows)
+        self.assertNotEqual(art, reporter.CREEPER_START)
         self.assertIn('43%', rows[0].split('   | ', 1)[1])
+
+    def test_creeper_animation_has_exact_start_and_padded_end_frames(self):
+        class TTYCapture(io.StringIO):
+            def isatty(self):
+                return True
+
+        output = TTYCapture()
+        reporter = start.SetupReporter(output, environment={'TERM': 'xterm-256color'})
+        reporter.percent = 0
+        self.assertEqual(reporter.creeper_frame(), reporter.CREEPER_START)
+
+        reporter.percent = 100
+        expected = (('',) + reporter.CREEPER_UNICODE + ('', ''))
+        self.assertEqual(reporter.creeper_frame(), expected)
+        self.assertEqual(len(reporter.creeper_frame()), reporter.CREEPER_ROWS)
+
+        reporter.percent = 0
+        reporter.render_progress(0)
+        start_frame = [line for line in output.getvalue().splitlines() if '   | ' in line]
+        start_column = reporter.display_width(start_frame[0][:start_frame[0].index('   | ')])
+        reporter.percent = 100
+        reporter.render_progress(1)
+        end_frame = [
+            line for line in start.ANSI_ESCAPE.sub('', output.getvalue()).splitlines()
+            if '   | ' in line
+        ][-reporter.CREEPER_ROWS:]
+        self.assertEqual(len(end_frame), reporter.CREEPER_ROWS)
+        self.assertEqual(end_frame[1].split('   | ', 1)[0].strip(), reporter.CREEPER_UNICODE[0])
+        end_column = reporter.display_width(
+            end_frame[0][:end_frame[0].index('   | ')])
+        self.assertEqual(end_column, start_column)
+
+    def test_indeterminate_creeper_animation_never_claims_a_percentage(self):
+        class TTYCapture(io.StringIO):
+            def isatty(self):
+                return True
+
+        output = TTYCapture()
+        reporter = start.SetupReporter(output, environment={'TERM': 'xterm-256color'})
+        reporter.begin('Building the Windows compatibility runtime')
+        first_frame = output.getvalue().split('   | ', 1)[1].splitlines()[0]
+        reporter.progress(1)
+        second_frame = output.getvalue().rsplit('\033[11A', 1)[-1]
+        second = second_frame.split('   | ', 1)[1].splitlines()[0]
+
+        self.assertIn('Working', first_frame)
+        self.assertIn('Working', second)
+        self.assertNotIn('%', first_frame)
+        self.assertNotIn('%', second)
+        self.assertNotEqual(first_frame, second)
+
+    def test_creeper_intermediate_transformation_is_monotonic(self):
+        reporter = start.SetupReporter(io.StringIO(), environment={'TERM': 'dumb'})
+        reporter.unicode_creeper = True
+        reporter.art_slot_width = reporter.CREEPER_UNICODE_WIDTH
+        frames = []
+        for percent in (0, 25, 50, 75, 99):
+            reporter.percent = percent
+            frames.append(reporter.creeper_frame())
+
+        def transformed(frame, row, column):
+            return frame[row][column] in 'gk'
+
+        for lower, upper in zip(frames, frames[1:]):
+            for row in range(reporter.CREEPER_ROWS):
+                for column in range(reporter.CREEPER_UNICODE_WIDTH):
+                    if column >= len(lower[row]):
+                        continue
+                    if transformed(lower, row, column):
+                        self.assertTrue(transformed(upper, row, column))
+
+    def test_creeper_no_color_fallback_keeps_eleven_rows(self):
+        class TTYCapture(io.StringIO):
+            def isatty(self):
+                return True
+
+        output = TTYCapture()
+        reporter = start.SetupReporter(
+            output, environment={'TERM': 'xterm-256color', 'NO_COLOR': '1'})
+        reporter.begin('Building native source dependencies')
+        reporter.percent = 100
+        reporter.render_progress(10)
+
+        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[11A', 1)[-1])
+        rows = [line for line in frame.splitlines() if line.strip()]
+        self.assertFalse(reporter.unicode_creeper)
+        self.assertEqual(len(rows), reporter.CREEPER_ROWS)
+        self.assertEqual(tuple(row.split('   | ', 1)[0].strip() for row in rows),
+                         ('',) + reporter.CREEPER_ASCII + ('', ''))
+        self.assertNotIn('\033[', frame)
 
     def test_autoconf_probe_exclamation_is_detail_not_a_failure_event(self):
         class TTYCapture(io.StringIO):
@@ -814,7 +909,7 @@ sys.exit(start.cli())
                 self.assertRaisesRegex(RuntimeError, 'failed; see the setup log'):
             start.run(['build'], 'Building the Windows compatibility runtime', log)
 
-        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[8A', 1)[-1])
+        frame = start.ANSI_ESCAPE.sub('', output.getvalue().rsplit('\033[11A', 1)[-1])
         self.assertIn('Wine runtime | 00:00 | FAILED', frame)
         self.assertIn('Cause: Setup: Close the standalone game',
                       frame)
@@ -842,7 +937,7 @@ sys.exit(start.cli())
         self.assertNotIn('97%', output.getvalue().split('\r')[-1])
         self.assertIn('Reused verified archive: freetype', output.getvalue())
         self.assertNotIn('✓ Reusing verified source archive', output.getvalue())
-        self.assertEqual(reporter.panel_rows, 8)
+        self.assertEqual(reporter.panel_rows, 11)
 
     def test_non_tty_download_updates_are_throttled_to_coarse_milestones(self):
         output = io.StringIO()
@@ -890,7 +985,7 @@ sys.exit(start.cli())
         self.assertFalse(reporter.unicode_creeper)
         self.assertIn('########', output.getvalue())
         self.assertNotIn('🟩', output.getvalue())
-        self.assertEqual(reporter.panel_rows, 8)
+        self.assertEqual(reporter.panel_rows, 11)
 
     def test_source_update_refreshes_generated_helper_before_existing_tree_verification(self):
         source = Path(__file__).resolve().parents[1]

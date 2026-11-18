@@ -76,8 +76,24 @@ class SetupReporter:
 
     MAX_ROWS = 4
     MIN_PANEL_WIDTH = 16
+    CREEPER_ROWS = 11
+    CREEPER_UNICODE_WIDTH = 17
+    CREEPER_ASCII_WIDTH = 8
     CONTEXT_LINES = 3
     MAX_DETAIL_LENGTH = 240
+    CREEPER_START = (
+        '█████████████████',
+        '█░░░░░░░░░░░░░░░█',
+        '█░░░░░░░░░░░░░░░█',
+        '█░░████░░░████░░█',
+        '█░░████░░░████░░█',
+        '█░░░░░███░░░░░░█',
+        '█░░░░███████░░░░█',
+        '█░░░░███████░░░░█',
+        '█░░░░██░░░██░░░░█',
+        '█░░░░░░░░░░░░░░░█',
+        '█████████████████',
+    )
     CREEPER_UNICODE = (
         '🟩🟩🟩🟩🟩🟩🟩🟩',
         '🟩⬛⬛🟩🟩⬛⬛🟩',
@@ -98,6 +114,10 @@ class SetupReporter:
         '## ## ##',
         '########',
     )
+    CREEPER_START_ASCII = tuple(
+        line.replace('█', '#').replace('░', '.')
+        for line in CREEPER_START
+    )
 
     def __init__(self, stream=None, *, fun_facts=False, environment=None):
         self.stream = sys.stdout if stream is None else stream
@@ -111,16 +131,19 @@ class SetupReporter:
                           and environment.get('CLICOLOR') != '0')
         encoding = getattr(self.stream, 'encoding', None) or 'utf-8'
         try:
-            for line in self.CREEPER_UNICODE:
+            for line in (*self.CREEPER_START, *self.CREEPER_UNICODE):
                 line.encode(encoding)
             self.unicode_creeper = self.color
         except (LookupError, UnicodeEncodeError):
             self.unicode_creeper = False
         self.terminal_width = max(
             self.MIN_PANEL_WIDTH, min(140, shutil.get_terminal_size((100, 24)).columns))
-        unicode_prefix_width = self.display_width('  ' + self.CREEPER_UNICODE[0] + '   | ')
+        unicode_prefix_width = (
+            2 + self.CREEPER_UNICODE_WIDTH + self.display_width('   | '))
         if self.unicode_creeper and self.terminal_width < unicode_prefix_width:
             self.unicode_creeper = False
+        self.art_slot_width = (
+            self.CREEPER_UNICODE_WIDTH if self.unicode_creeper else self.CREEPER_ASCII_WIDTH)
         self.fun_facts = fun_facts
         self.fact_index = 0
         self.last_fact_elapsed = 0
@@ -163,6 +186,67 @@ class SetupReporter:
             clipped.append(character)
             used += character_width
         return ''.join(clipped)
+
+    def creeper_frame(self):
+        if self.percent is None:
+            return self.CREEPER_START if self.unicode_creeper else self.creeper_frame_for_ascii_start()
+
+        progress = min(100.0, max(0.0, float(self.percent)))
+        if progress == 0:
+            return (self.CREEPER_START if self.unicode_creeper else
+                    self.creeper_frame_for_ascii_start())
+        if progress == 100:
+            art = self.CREEPER_UNICODE if self.unicode_creeper else self.CREEPER_ASCII
+            padding = (self.CREEPER_ROWS - len(art)) // 2
+            return (('',) * padding + art
+                    + ('',) * (self.CREEPER_ROWS - padding - len(art)))
+
+        width = self.art_slot_width
+        if self.unicode_creeper:
+            source = self.CREEPER_START
+        else:
+            source = self.creeper_frame_for_ascii_start()
+        source = tuple(line.ljust(width) for line in source)
+        target_count = int(progress * self.CREEPER_ROWS * width / 100)
+        frame = []
+        for row, line in enumerate(source):
+            cells = []
+            target_row = min(
+                len(self.CREEPER_UNICODE) - 1,
+                max(0, round((row - 1) * (len(self.CREEPER_UNICODE) - 1)
+                             / (self.CREEPER_ROWS - 3))))
+            for column, original in enumerate(line):
+                if row * width + column < target_count:
+                    target_column = min(
+                        len(self.CREEPER_UNICODE[0]) - 1,
+                        round(column * (self.CREEPER_ASCII_WIDTH - 1) / (width - 1)))
+                    target = self.CREEPER_UNICODE[target_row][target_column]
+                    cells.append('g' if target == '🟩' else 'k')
+                else:
+                    cells.append(original)
+            frame.append(''.join(cells))
+        return tuple(frame)
+
+    def creeper_frame_for_ascii_start(self):
+        return tuple(
+            ''.join(line[round(column * (len(line) - 1)
+                               / (self.CREEPER_ASCII_WIDTH - 1))]
+                    for column in range(self.CREEPER_ASCII_WIDTH))
+            for line in self.CREEPER_START_ASCII
+        )
+
+    def format_creeper_row(self, drawing):
+        cells = []
+        for character in drawing:
+            if character in ('g', '█'):
+                glyph, color = ('█' if self.unicode_creeper else '#'), '1;32'
+            elif character in ('k', '░'):
+                glyph, color = ('░' if self.unicode_creeper else ' '), '90'
+            else:
+                glyph, color = character, None
+            cells.append(self.paint(glyph, color) if self.unicode_creeper and color else glyph)
+        drawing = ''.join(cells)
+        return drawing if self.unicode_creeper else self.paint(drawing, '1;32')
 
     def begin(self, label):
         if self.tty and not self.screen_initialized:
@@ -253,14 +337,16 @@ class SetupReporter:
         percent = self.percent
         if percent is None:
             self.spinner_index += 1
-            percent_text = '--%'
+            percent_text = 'Working'
         else:
             percent_text = f'{round(percent)}%'
 
         elapsed_text = f'{elapsed // 60:02}:{elapsed % 60:02}'
-        art = self.CREEPER_UNICODE if self.unicode_creeper else self.CREEPER_ASCII
+        art = self.creeper_frame()
         recent = self.recent_output[-self.CONTEXT_LINES:]
         result = self.phase_result or percent_text
+        if percent is None and not self.phase_result:
+            result += ' ' + '|/-\\'[self.spinner_index % 4]
         details = [self.stage_label + ' | ' + elapsed_text + ' | ' + result]
         if recent:
             details.extend(recent)
@@ -269,7 +355,9 @@ class SetupReporter:
         details = details[:len(art)]
         rows = []
         for index, drawing in enumerate(art):
-            left = '  ' + (drawing if self.unicode_creeper else self.paint(drawing, '1;32'))
+            formatted = self.format_creeper_row(drawing)
+            drawing_width = self.display_width(formatted)
+            left = '  ' + formatted + ' ' * max(0, self.art_slot_width - drawing_width)
             prefix = left + '   | '
             detail = details[index] if index < len(details) else ''
             detail_width = max(0, self.terminal_width - self.display_width(prefix))
@@ -441,6 +529,8 @@ class SetupReporter:
         if self.tty:
             if result:
                 self.phase_result = result
+                if result == 'Complete':
+                    self.percent = 100
                 self.recent_output = []
                 self.update_stage(result, include_context=False)
             return
