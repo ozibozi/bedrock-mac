@@ -101,6 +101,65 @@ def verify(prefix):
     return data
 
 
+def _remove_owned_path(path):
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+    elif os.path.lexists(path):
+        raise ValueError("Unsupported existing dependency path: " + str(path))
+
+
+def copy_dependency_file(source, destination):
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.is_symlink() or destination.is_dir():
+        _remove_owned_path(destination)
+    if destination.is_file() and digest(source) == digest(destination):
+        return
+    descriptor, temporary = tempfile.mkstemp(prefix=".dependency-copy-", dir=destination.parent)
+    os.close(descriptor)
+    try:
+        shutil.copy2(source, temporary)
+        os.replace(temporary, destination)
+    finally:
+        if os.path.lexists(temporary):
+            os.unlink(temporary)
+
+
+def copy_dependency_tree(source, destination):
+    """Idempotently stage a verified tree, including symlinks, after interrupted copies."""
+    source = Path(source)
+    destination = Path(destination)
+    if source.is_symlink() or not source.is_dir():
+        raise ValueError("Dependency source must be a real directory")
+    if destination.is_symlink():
+        raise ValueError("Dependency destination must not be a symlink")
+
+    def copy_entry(origin, target):
+        if origin.is_symlink():
+            link = origin.readlink()
+            if target.is_symlink() and target.readlink() == link:
+                return
+            if os.path.lexists(target):
+                _remove_owned_path(target)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.symlink_to(link)
+        elif origin.is_dir():
+            if target.is_symlink() or (os.path.lexists(target) and not target.is_dir()):
+                _remove_owned_path(target)
+            target.mkdir(parents=True, exist_ok=True)
+            for child in origin.iterdir():
+                copy_entry(child, target / child.name)
+        elif origin.is_file():
+            copy_dependency_file(origin, target)
+        else:
+            raise ValueError("Unsupported dependency source path: " + str(origin))
+
+    destination.mkdir(parents=True, exist_ok=True)
+    for child in source.iterdir():
+        copy_entry(child, destination / child.name)
+
+
 def run(command, log, env, cwd=None, live_output=False):
     with log.open("ab") as output:
         output.write(b"COMMAND " + json.dumps(command).encode("utf-8") + b"\n")

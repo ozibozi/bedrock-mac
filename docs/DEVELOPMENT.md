@@ -126,6 +126,12 @@ to Rust or shell where reasonably practical, without porting unrelated
 research tools. Any retained build-only Python must have a concrete, documented
 toolchain dependency; no such exception is established as the final design.
 
+Interrupted Wine builds may leave already staged native dependency symlinks or
+files in the runtime prefix. Setup now verifies its source dependency prefix and
+copies each entry idempotently; file replacements use temporary siblings and
+atomic promotion, so retry can continue without treating an existing correct
+symlink as a copy error.
+
 Source setup gives one concise purpose line per stage, then streams selected
 compiler and download status into the terminal while preserving complete build
 logs under `logs/standalone/setup/`. The log directory is shown once per setup.

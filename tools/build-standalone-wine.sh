@@ -66,7 +66,7 @@ export LC_ALL=en_US.UTF-8
 # a separate directory with tools/build-native-dependencies.py; do not reuse unknown
 # libraries from an older binary archive.
 python3 - "$ROOT" "$STANDALONE_DEPENDENCY_PREFIX" "$PREFIX" <<'PYDEPS'
-import importlib.util, pathlib, shutil, sys
+import importlib.util, pathlib, sys
 root, dependencies, prefix = map(pathlib.Path, sys.argv[1:])
 spec = importlib.util.spec_from_file_location("native_dependencies", root / "tools/build-native-dependencies.py")
 module = importlib.util.module_from_spec(spec)
@@ -78,8 +78,9 @@ for existing in (prefix / "lib").iterdir():
     if existing.name != "wine" and not (dependencies / "lib" / existing.name).exists():
         raise SystemExit("Existing runtime has untracked dependencies; use a fresh isolated runtime: " + existing.name)
 for name in ("lib", "include", "notices"):
-    shutil.copytree(dependencies / name, prefix / name, symlinks=True, dirs_exist_ok=True)
-shutil.copyfile(dependencies / "dependency-manifest.json", prefix / "native-dependency-manifest.json")
+    module.copy_dependency_tree(dependencies / name, prefix / name)
+module.copy_dependency_file(
+    dependencies / "dependency-manifest.json", prefix / "native-dependency-manifest.json")
 PYDEPS
 if [ ! -d "$SOURCE" ]; then
   cp -cRp "$ROOT/sources/winegdk" "$SOURCE"

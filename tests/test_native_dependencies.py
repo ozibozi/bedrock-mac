@@ -132,6 +132,57 @@ class NativeDependencyResumeTests(unittest.TestCase):
         self.assertIn(b"Compiling fixture source", log.read_bytes())
         self.assertIn(b"Compiling fixture source", captured)
 
+    def test_dependency_tree_copy_resumes_when_interrupted_after_symlink_creation(self):
+        source = self.root / "source-prefix/lib"
+        destination = self.root / "runtime-prefix/lib"
+        source.mkdir(parents=True)
+        (source / "libfreetype.6.dylib").write_bytes(b"freetype")
+        (source / "libfreetype.dylib").symlink_to("libfreetype.6.dylib")
+        destination.mkdir(parents=True)
+        (destination / "libfreetype.6.dylib").write_bytes(b"freetype")
+        (destination / "libfreetype.dylib").symlink_to("libfreetype.6.dylib")
+        (source / "libgnutls.30.dylib").write_bytes(b"gnutls")
+
+        builder.copy_dependency_tree(source, destination)
+        builder.copy_dependency_tree(source, destination)
+
+        self.assertEqual((destination / "libfreetype.dylib").readlink(),
+                         Path("libfreetype.6.dylib"))
+        self.assertEqual((destination / "libgnutls.30.dylib").read_bytes(), b"gnutls")
+        self.assertEqual(list(destination.glob(".dependency-copy-*")), [])
+
+    def test_dependency_copy_replaces_only_the_conflicting_verified_entry(self):
+        source = self.root / "source-prefix/include"
+        destination = self.root / "runtime-prefix/include"
+        source.mkdir(parents=True)
+        (source / "gnutls").mkdir()
+        (source / "gnutls/gnutls.h").write_bytes(b"verified header")
+        destination.mkdir(parents=True)
+        (destination / "gnutls").write_text("interrupted conflicting output")
+
+        builder.copy_dependency_tree(source, destination)
+
+        self.assertTrue((destination / "gnutls").is_dir())
+        self.assertEqual((destination / "gnutls/gnutls.h").read_bytes(), b"verified header")
+
+    def test_interrupted_dependency_file_copy_preserves_previous_file_and_retries(self):
+        source = self.root / "source-prefix/lib"
+        destination = self.root / "runtime-prefix/lib"
+        source.mkdir(parents=True)
+        destination.mkdir(parents=True)
+        (source / "libfreetype.6.dylib").write_bytes(b"complete verified library")
+        previous = destination / "libfreetype.6.dylib"
+        previous.write_bytes(b"previous complete library")
+
+        with patch.object(builder.shutil, "copy2", side_effect=OSError("fixture interruption")):
+            with self.assertRaisesRegex(OSError, "fixture interruption"):
+                builder.copy_dependency_tree(source, destination)
+        self.assertEqual(previous.read_bytes(), b"previous complete library")
+        self.assertEqual(list(destination.glob(".dependency-copy-*")), [])
+
+        builder.copy_dependency_tree(source, destination)
+        self.assertEqual(previous.read_bytes(), b"complete verified library")
+
 
 if __name__ == "__main__":
     unittest.main()
