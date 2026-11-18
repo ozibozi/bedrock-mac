@@ -85,9 +85,16 @@ pkg-config --version
 /usr/bin/arch -x86_64 /usr/bin/true
 ```
 
-The last command must exit successfully for the Intel runtime to work. If
-Rosetta is missing, follow [Apple's instructions](https://support.apple.com/en-us/102527).
-The native app only checks for Rosetta. `Start.command` can request Apple’s
+The last command must exit successfully for the current Intel runtime to work.
+It only proves that this x86-64 probe can start; it does not establish that
+Wine, DXMT or the game is eligible under macOS 28's narrower Rosetta policy.
+Apple's [Rosetta instructions](https://support.apple.com/en-us/102527) describe
+general availability through macOS 27 and a limited game exception starting
+with macOS 28. The Windows 11 ARM route is only an OSS feasibility
+investigation; no VM or graphics adapter replaces the existing Wine path or
+launches Bedrock. See
+[the Windows ARM migration status](COMPATIBILITY.md#macos-28-and-windows-11-arm).
+The native app only checks the x86-64 probe. `Start.command` can request Apple’s
 Rosetta installer during source setup; the user handles its license prompt.
 
 ### Build paths

@@ -1,10 +1,10 @@
 # Bedrock for Mac
 
 Run your owned **Minecraft for Windows (Bedrock)** on an Apple Silicon Mac,
-using WineGDK, DXMT, and Xodus. The launcher is native macOS; the Windows game
-runs through Wine and Rosetta. No CrossOver subscription is required. Setup
-gets you to vanilla Minecraft, which keeps its own worlds, packs, settings and
-friends menus.
+using WineGDK, DXMT, and Xodus. The current launcher is native macOS; the
+Windows game runs through Wine and Rosetta. No CrossOver subscription is
+required. Setup gets you to vanilla Minecraft, which keeps its own worlds,
+packs, settings and friends menus.
 
 **Open-source preview.** Build scripts are available now; there is no public
 notarized app or downloadable installer. Local app candidates have separate
@@ -21,9 +21,17 @@ native launcher.
 | **Experimental** | Opt-in [Mullion ray tracing](experiments/mullion/RESULTS.md) rendered a proof world on the M4 Pro. Limited feature support; no general DirectX 12 conformance or long-session guarantee. |
 | **Not verified** | Clean-Mac source setup, current packaged-candidate save/reopen and multiplayer, live update/recovery, and party creation/invites/joining with the compiled party fix. See [compatibility](docs/COMPATIBILITY.md) and [release gates](docs/RELEASE.md). |
 
-Apple Silicon and macOS 15+ are the source target. An M1 Air, 16 GB, is
+Apple Silicon and macOS 15+ are the source target. The current game runtime
+requires x86-64 translation; macOS 28 compatibility is unverified because
+Apple has announced a narrower Rosetta role there. An M1 Air, 16 GB, is
 [reported working](docs/COMPATIBILITY.md), without a recorded OS/revision or
 clean-install qualification. Start with [source setup](#start-from-source).
+
+The macOS 28 Windows ARM route is still a feasibility investigation, not a
+playable adapter. Supporting launcher, virtualization, translation, graphics,
+and integration components must be open source; the existing Wine/Rosetta path
+remains the default. See the
+[migration status](docs/COMPATIBILITY.md#macos-28-and-windows-11-arm).
 
 ## Start from source
 

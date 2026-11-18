@@ -10,6 +10,14 @@ checkout; a separately packaged native app uses its own data root. No public
 notarized installer is available. See [setup](README.md#start-from-source),
 [build instructions](docs/DEVELOPMENT.md) and [release readiness](docs/RELEASE.md).
 
+The supported game/runtime path remains x86-64 and requires Rosetta on Apple
+Silicon. The macOS-only Windows 11 ARM route is an OSS feasibility
+investigation; no VM adapter or playable replacement is implemented. Apple
+documents a narrower Rosetta role starting with macOS 28, but this project has
+no qualified replacement runtime or macOS 28 compatibility claim. See the
+[compatibility status](docs/COMPATIBILITY.md#macos-28-and-windows-11-arm) and
+[migration stages](docs/ROADMAP.md#macos-28-windows-arm-migration).
+
 ## Components
 
 | Component | Responsibility | Source |
@@ -88,7 +96,8 @@ session to force startup. See [shared safety rules](CONTRIBUTING.md#protect-game
 
 ## Build and trust boundaries
 
-The launcher is arm64; Wine/DXMT and the Windows game use the Intel/Rosetta path.
+The launcher is arm64; Wine/DXMT and the current Windows game package use the
+Intel/Rosetta path.
 Each packaged app needs a complete native minimum-OS audit. Its Swift deployment
 target alone cannot establish platform support.
 
