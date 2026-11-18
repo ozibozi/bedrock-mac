@@ -509,7 +509,7 @@ sys.exit(start.cli())
             start.run(['build'], 'Building the Windows compatibility runtime', log)
         text = output.getvalue()
         self.assertIn('Applies WineGDK patches and compiles the x86-64 Wine runtime.', text)
-        self.assertIn('Build: 42% — Building fixture target', text)
+        self.assertIn('Wine runtime: 42% — Building fixture target', text)
         self.assertNotIn('private-token', text)
         self.assertNotIn('example.invalid', text)
         self.assertNotIn('ordinary noisy output', text)
@@ -529,25 +529,48 @@ sys.exit(start.cli())
         output = TTYCapture()
         reporter = start.SetupReporter(output, environment={'TERM': 'xterm-256color'})
         reporter.begin('Building native source dependencies')
-        reporter.output_line(b'Compiling crate-a')
-        reporter.output_line(b'Compiling crate-b')
-        reporter.output_line(b'Downloading source archive: freetype')
+        reporter.output_line(b'Downloading source archive: gmp')
         reporter.output_line(b'################################ 42.6%')
+        reporter.output_line(b'Building dependency: gmp')
+        reporter.output_line(b'config.status: linking mpn/x86_64')
         reporter.progress(12)
         rendered = output.getvalue()
         self.assertIn('\033[1;36m', rendered)
-        self.assertIn('\033[3A', rendered)
-        frame = rendered.split('\033[3A')[-1]
+        self.assertIn('\033[1A', rendered)
+        frame = rendered.split('\033[1A')[-1]
         frame = start.ANSI_ESCAPE.sub('', frame)
         rows = [line for line in frame.splitlines() if line.strip()]
-        self.assertEqual(len(rows), 3)
+        self.assertEqual(len(rows), 1)
         self.assertEqual(len({len(row) for row in rows}), 1)
         self.assertLessEqual(len(rows[0]), 80)
-        self.assertTrue(any('crate-a' in row for row in rows))
-        self.assertTrue(any('crate-b' in row for row in rows))
-        self.assertTrue(any('freetype' in row and ' 43%' in row for row in rows))
+        self.assertIn('Building GMP', rows[0])
+        self.assertIn('config.status: linking mpn/x', rows[0])
+        self.assertEqual(reporter.stage_label, 'Building GMP')
         self.assertNotIn('################################', frame)
         reporter.finish('')
+
+    def test_compiler_fragments_never_become_task_labels(self):
+        examples = (
+            'lex',
+            'whether',
+            'that',
+            'CCPIC... | checking',
+            'if | checking',
+            'for | checking',
+            'Build | config.status: linking x86_64/ec',
+            'config.status: linking mpn/x86_64',
+        )
+        reporter = start.SetupReporter(io.StringIO(), environment={'TERM': 'dumb'})
+        reporter.begin('Building native source dependencies')
+        for line in examples:
+            reporter.output_line(line.encode())
+            self.assertEqual(reporter.stage_label, 'Native dependencies')
+            if reporter.tasks:
+                self.assertEqual(list(reporter.tasks), ['stage'])
+                self.assertEqual(reporter.tasks['stage']['name'], 'Native dependencies')
+                self.assertNotEqual(reporter.tasks['stage']['name'],
+                                    line.split('|', 1)[0].strip())
+            self.assertLessEqual(len(reporter.detail), reporter.STATUS_WIDTH)
 
     def test_completed_archive_event_clears_live_download_row(self):
         class TTYCapture(io.StringIO):
@@ -561,6 +584,9 @@ sys.exit(start.cli())
         reporter.output_line(b'############################## 97%')
         reporter.output_line(b'Reusing verified source archive: freetype')
         self.assertNotIn('download:freetype', reporter.tasks)
+        self.assertIsNone(reporter.current_download)
+        self.assertEqual(reporter.stage_label, 'Native dependencies')
+        self.assertEqual(reporter.tasks['stage']['status'], 'Preparing source builds')
         reporter.progress(199)
         self.assertNotIn('97%', output.getvalue().split('\r')[-1])
         self.assertIn(reporter.paint('✓', '1;32') + ' Reusing verified source archive: freetype',
@@ -574,10 +600,11 @@ sys.exit(start.cli())
         for percent in (1, 5, 24, 26, 49, 51, 74, 76, 99, 100):
             reporter.output_line(b'#' * 40 + f' {percent}%'.encode())
         text = output.getvalue()
-        milestones = [line for line in text.splitlines() if 'freetype:' in line and '%' in line]
+        milestones = [line for line in text.splitlines()
+                      if 'Downloading FreeType:' in line and '%' in line]
         self.assertEqual(len(milestones), 5)
         self.assertEqual([int(line.split('%', 1)[0].rsplit(' ', 1)[-1]) for line in milestones],
-                         [1, 26, 51, 76, 100])
+                         [0, 26, 51, 76, 100])
         self.assertNotIn('#' * 20, text)
 
     def test_no_color_and_opt_in_fun_facts(self):

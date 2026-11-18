@@ -57,7 +57,17 @@ CMAKE_PROGRESS = re.compile(r'\[\s*\d{1,3}%\]')
 CURL_PERCENT = re.compile(r'\b(\d{1,3}(?:\.\d+)?)%')
 DOWNLOAD_NAME = re.compile(r'(?i)(?:source archive|graphics asset):\s*([A-Za-z0-9._+-]+)')
 RESUME_NAME = re.compile(r'(?i)Resuming partial source download:\s*([A-Za-z0-9._+-]+)')
-COMPILE_NAME = re.compile(r'(?i)^(Compiling|Checking)\s+([A-Za-z0-9._+-]+)')
+NATIVE_COMPONENT_LABELS = {
+    'gmp': 'GMP',
+    'nettle': 'Nettle',
+    'libtasn1': 'libtasn1',
+    'libunistring': 'libunistring',
+    'gnutls': 'GnuTLS',
+    'freetype': 'FreeType',
+}
+DEPENDENCY_NAME = re.compile(r'(?i)^Building dependency:\s*([A-Za-z0-9._+-]+)$')
+ARCHIVE_EVENT = re.compile(
+    r'(?i)(?:Verified and cached|Reusing verified) source archive:\s*([A-Za-z0-9._+-]+)')
 CMAKE_PERCENT = re.compile(r'\[\s*(\d{1,3})%\]\s*(.*)')
 
 
@@ -66,8 +76,8 @@ class SetupReporter:
 
     BAR_WIDTH = 10
     MAX_ROWS = 4
-    NAME_WIDTH = 14
-    STATUS_WIDTH = 32
+    NAME_WIDTH = 20
+    STATUS_WIDTH = 28
 
     def __init__(self, stream=None, *, fun_facts=False, environment=None):
         self.stream = sys.stdout if stream is None else stream
@@ -86,6 +96,9 @@ class SetupReporter:
         self.spinner_index = 0
         self.tasks = {}
         self.current_download = None
+        self.stage_label = 'Setup'
+        self.detail = 'Working'
+        self.percent = None
         self.panel_rows = 0
         self.non_tty_buckets = {}
         self.last_non_tty_update = 0
@@ -100,6 +113,20 @@ class SetupReporter:
         self.clear_panel()
         self.tasks.clear()
         self.current_download = None
+        self.stage_label = {
+            'Building native source dependencies': 'Native dependencies',
+            'Building the Windows compatibility runtime': 'Wine runtime',
+            'Building Microsoft sign-in': 'Sign-in helper',
+            'Installing graphics support': 'Graphics support',
+            'Building graphics checks': 'Graphics checks',
+            'Building and testing the graphics memory fixes': 'Graphics bridge',
+            'Installing Microsoft game support': 'Microsoft component',
+            'Downloading Minecraft': 'Minecraft download',
+            'Preparing Minecraft': 'Minecraft setup',
+            'Starting Minecraft': 'Minecraft launch',
+        }.get(label, label)[:self.NAME_WIDTH]
+        self.detail = 'Working'
+        self.percent = None
         self.non_tty_buckets.clear()
         self.last_non_tty_update = 0
         self.stage_started = time.monotonic()
@@ -135,10 +162,25 @@ class SetupReporter:
         else:
             self.non_tty_update(key, percent)
 
+    def update_stage(self, status, percent=None):
+        self.detail = status[:self.STATUS_WIDTH]
+        if percent is not None:
+            self.percent = percent
+        self.tasks.clear()
+        self.tasks['stage'] = {
+            'name': self.stage_label,
+            'status': self.detail,
+            'percent': self.percent,
+        }
+        if self.tty:
+            self.render_progress(int(time.monotonic() - self.stage_started))
+        else:
+            self.non_tty_update('stage', self.percent)
+
     def render_progress(self, elapsed):
         tasks = list(self.tasks.values())[-self.MAX_ROWS:]
         if not tasks:
-            tasks = [{'name': 'setup', 'status': 'Working', 'percent': None}]
+            tasks = [{'name': self.stage_label, 'status': self.detail, 'percent': self.percent}]
         rows = []
         for task in tasks:
             percent = task['percent']
@@ -208,17 +250,17 @@ class SetupReporter:
         completed = bool(COMPLETED_STATUS.search(text))
         failed = bool(ERROR_STATUS.search(text))
         download = DOWNLOAD_NAME.search(text) or RESUME_NAME.search(text)
+        dependency = DEPENDENCY_NAME.match(text)
+        archive_event = ARCHIVE_EVENT.search(text)
         if completed or failed:
-            if download:
-                key = 'download:' + download.group(1).lower()
-                self.tasks.pop(key, None)
-                if self.current_download == key:
-                    self.current_download = None
-            elif re.search(r'(?i)\bFinished\b', text):
-                for key in list(self.tasks):
-                    if key.startswith('cargo:'):
-                        self.tasks.pop(key)
+            if archive_event:
+                self.current_download = None
+                self.stage_label = 'Native dependencies'
+                self.percent = None
+                self.update_stage('Preparing source builds')
             elif 'Verified dependency prefix' in text:
+                self.percent = None
+                self.detail = 'Verified'
                 self.tasks.clear()
                 self.current_download = None
             self.event(text, success=completed and not failed, failed=failed)
@@ -228,27 +270,33 @@ class SetupReporter:
                 match = CURL_PERCENT.search(text)
                 if match:
                     percent = min(100.0, max(0.0, float(match.group(1))))
-                    task = self.tasks.get(self.current_download)
-                    if task:
-                        self.update_task(self.current_download, task['name'], task['status'], percent)
+                    self.update_stage(self.detail, percent)
             return
         cmake = CMAKE_PERCENT.search(text)
         if cmake:
             percent = min(100.0, max(0.0, float(cmake.group(1))))
-            self.update_task('cmake:build', 'Build', cmake.group(2).strip() or 'Building', percent)
+            self.update_stage(cmake.group(2).strip() or self.detail, percent)
+            return
+        if dependency:
+            component = dependency.group(1).lower()
+            label = NATIVE_COMPONENT_LABELS.get(component)
+            if label:
+                self.current_download = None
+                self.percent = None
+                self.stage_label = ('Building ' + label)[:self.NAME_WIDTH]
+                self.update_stage('Compiling source')
             return
         if download:
-            key = 'download:' + download.group(1).lower()
-            self.current_download = key
-            self.update_task(key, download.group(1), text)
+            component = download.group(1).lower()
+            label = NATIVE_COMPONENT_LABELS.get(component)
+            if label:
+                self.current_download = component
+                self.percent = 0
+                self.stage_label = ('Downloading ' + label)[:self.NAME_WIDTH]
+                self.update_stage('Fetching verified source')
             return
-        compile_task = COMPILE_NAME.match(text)
-        if compile_task:
-            name = compile_task.group(2)
-            self.update_task('cargo:' + name, name, compile_task.group(1))
-            return
-        if ACTIVE_STATUS.search(text):
-            self.update_task('build:current', 'Build', text)
+        if ACTIVE_STATUS.search(text) or re.search(r'(?i)config\.status:\s*linking\b', text):
+            self.update_stage(text)
 
     def progress(self, elapsed):
         total_elapsed = int(time.monotonic() - self.started)
@@ -260,9 +308,7 @@ class SetupReporter:
         if self.tty:
             self.render_progress(elapsed)
         else:
-            details = '; '.join(
-                f'{task["name"]}: {task["status"]}' for task in list(self.tasks.values())[-2:])
-            suffix = ' — ' + details[:72] if details else ''
+            suffix = ' — ' + self.detail[:48] if self.detail else ''
             print(f'  Working ({elapsed // 60:02}:{elapsed % 60:02}){suffix}',
                   file=self.stream, flush=True)
 

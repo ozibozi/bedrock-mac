@@ -375,6 +375,7 @@ def build(destination, jobs, fetch_only=False, cache_dir=None, live_output=False
     identity_path.write_text(json.dumps(identity, indent=2) + "\n")
     commands = []
     for component in lock["components"]:
+        print("Building dependency: " + component["name"], flush=True)
         source = sources / component["source_dir"]
         complete = logs / (component["name"] + ".complete")
         command = [str(source / "configure"), "--prefix=" + str(prefix), "--build=aarch64-apple-darwin", "--host=x86_64-apple-darwin", "--enable-shared", "--disable-static", *component["configure"]]
