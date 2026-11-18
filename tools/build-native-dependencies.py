@@ -13,6 +13,7 @@ import re
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 
@@ -100,11 +101,40 @@ def verify(prefix):
     return data
 
 
-def run(command, log, env, cwd=None):
-    with log.open("a") as output:
-        output.write("COMMAND " + json.dumps(command) + "\n")
+def run(command, log, env, cwd=None, live_output=False):
+    with log.open("ab") as output:
+        output.write(b"COMMAND " + json.dumps(command).encode("utf-8") + b"\n")
         output.flush()
-        subprocess.run(command, cwd=cwd, env=env, stdout=output, stderr=subprocess.STDOUT, check=True)
+        if not live_output:
+            subprocess.run(command, cwd=cwd, env=env, stdout=output,
+                           stderr=subprocess.STDOUT, check=True)
+            return
+        process = subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT, bufsize=0)
+        try:
+            with process.stdout:
+                while chunk := process.stdout.read(4096):
+                    output.write(chunk)
+                    output.flush()
+                    sys.stdout.buffer.write(chunk)
+                    sys.stdout.buffer.flush()
+            code = process.wait()
+        except BaseException:
+            try:
+                process.terminate()
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                process.wait()
+            raise
+        if code:
+            raise subprocess.CalledProcessError(code, command)
 
 
 def relocate(prefix):
@@ -165,44 +195,114 @@ def build_environment(destination, prefix, sdk, clang, pkg_config):
         ZLIB_CFLAGS=f"-I{sdk}/usr/include", ZLIB_LIBS="-lz")
 
 
-def build(destination, jobs, fetch_only=False):
+def check_source_lock(directory, lock_digest):
+    if directory.is_symlink():
+        raise ValueError("Source download cache must not be a symlink")
+    directory.mkdir(parents=True, exist_ok=True)
+    marker = directory / "source-lock.sha256"
+    if marker.is_symlink():
+        raise ValueError("Source download cache marker must not be a symlink")
+    if marker.exists():
+        if marker.read_text().strip() != lock_digest:
+            raise ValueError("Existing source download cache uses different pinned sources")
+    elif any(directory.iterdir()):
+        raise ValueError("Source download cache contains unmarked files; preserve it and choose a new cache directory")
+    else:
+        descriptor, temporary_name = tempfile.mkstemp(prefix=".source-lock-", dir=directory)
+        try:
+            with os.fdopen(descriptor, "w", encoding="ascii") as output:
+                output.write(lock_digest + "\n")
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary_name, marker)
+        finally:
+            if os.path.exists(temporary_name):
+                os.unlink(temporary_name)
+
+
+def fetch_archive(component, downloads):
+    archive = downloads / component["archive"]
+    partial = downloads / (component["archive"] + ".part")
+    for path in (archive, partial):
+        if path.is_symlink():
+            raise ValueError("Source archive path must not be a symlink: " + path.name)
+        if path.exists() and not path.is_file():
+            raise ValueError("Source archive path must be a regular file: " + path.name)
+    expected = component["sha256"]
+    if archive.exists():
+        if digest(archive) == expected:
+            print("Reusing verified source archive: " + component["name"], flush=True)
+            return archive
+        archive.unlink()
+        print("Discarded a source archive with a checksum mismatch: " + component["name"], flush=True)
+
+    def download(resume):
+        command = ["/usr/bin/curl", "--disable", "--fail", "--location", "--proto", "=https",
+                   "--proto-redir", "=https", "--retry", "3", "--progress-bar"]
+        if resume:
+            command.extend(["--continue-at", "-"])
+        command.extend(["--output", str(partial), component["url"]])
+        subprocess.run(command, check=True)
+
+    resuming = partial.exists()
+    if resuming:
+        print("Resuming partial source download: " + component["name"], flush=True)
+    else:
+        print("Downloading source archive: " + component["name"], flush=True)
+    download(resuming)
+    if digest(partial) != expected:
+        partial.unlink()
+        if not resuming:
+            raise ValueError("Source digest mismatch: " + component["name"])
+        print("The resumed bytes did not match the pinned checksum; retrying the archive from the beginning.",
+              flush=True)
+        download(False)
+        if digest(partial) != expected:
+            partial.unlink()
+            raise ValueError("Source digest mismatch: " + component["name"])
+    partial.replace(archive)
+    print("Verified and cached source archive: " + component["name"], flush=True)
+    return archive
+
+
+def build(destination, jobs, fetch_only=False, cache_dir=None, live_output=False):
     # Validate before creating a cache or downloading anything. Fetch-only does
     # not require a compiler/SDK, but its future build paths must still be safe.
     require_build_path(ROOT, "source checkout")
     destination = require_build_path(destination, "dependency destination")
     for name in ("downloads", "source", "prefix", "logs", "build-home", "build-tmp"):
         require_build_path(destination / name, "dependency " + name)
+    separate_cache = cache_dir is not None
+    cache_dir = destination if cache_dir is None else require_build_path(cache_dir, "source download cache")
+    if separate_cache and (cache_dir == destination
+                           or cache_dir in destination.parents
+                           or destination in cache_dir.parents):
+        raise ValueError("Source download cache must be separate from the build attempt")
+    require_build_path(cache_dir / "downloads", "source download cache")
     if not hasattr(tarfile, "data_filter"):
         raise ValueError("Source extraction requires Python 3.12 or newer")
-    if destination.is_symlink():
+    if destination.is_symlink() or cache_dir.is_symlink():
         raise ValueError("Build destination must not be a symlink")
     tools = None if fetch_only else build_tools()
     destination.mkdir(parents=True, exist_ok=True)
+    lock_digest = digest(LOCK)
     marker = destination / "source-lock.sha256"
     if marker.exists():
-        if marker.read_text().strip() != digest(LOCK):
+        if marker.read_text().strip() != lock_digest:
             raise ValueError("Existing build uses different pinned sources; choose a new directory")
     elif any(destination.iterdir()):
         raise ValueError("Use an empty isolated build destination")
     else:
-        marker.write_text(digest(LOCK) + "\n")
+        marker.write_text(lock_digest + "\n")
+    if cache_dir != destination:
+        check_source_lock(cache_dir, lock_digest)
     lock = json.loads(LOCK.read_text())
-    downloads, sources, prefix, logs = (destination / name for name in ("downloads", "source", "prefix", "logs"))
+    downloads = cache_dir / "downloads"
+    sources, prefix, logs = (destination / name for name in ("source", "prefix", "logs"))
     for path in (downloads, sources, prefix, logs):
         path.mkdir(exist_ok=True)
     for component in lock["components"]:
-        archive = downloads / component["archive"]
-        if archive.is_symlink():
-            raise ValueError("Archive must not be a symlink")
-        if not archive.exists():
-            with tempfile.TemporaryDirectory(prefix=".fetch-", dir=downloads) as temporary:
-                candidate = Path(temporary) / "source.tar"
-                subprocess.run(["/usr/bin/curl", "--disable", "--fail", "--location", "--proto", "=https", "--proto-redir", "=https", "--retry", "3", "--output", str(candidate), component["url"]], check=True)
-                if digest(candidate) != component["sha256"]:
-                    raise ValueError("Source digest mismatch: " + component["name"])
-                candidate.replace(archive)
-        if digest(archive) != component["sha256"]:
-            raise ValueError("Source digest mismatch: " + component["name"])
+        fetch_archive(component, downloads)
     if fetch_only:
         return
     # Fetch-only caches may be reused after digest verification. Source/build
@@ -223,9 +323,9 @@ def build(destination, jobs, fetch_only=False):
         with tarfile.open(downloads / component["archive"]) as archive:
             archive.extractall(sources, filter="data")
         log = logs / (component["name"] + ".log")
-        run(command, log, env, source)
-        run(["make", "-j", str(jobs)], log, env, source)
-        run(["make", "install"], log, env, source)
+        run(command, log, env, source, live_output)
+        run(["make", "-j", str(jobs)], log, env, source, live_output)
+        run(["make", "install"], log, env, source, live_output)
         complete.write_text(component["sha256"] + "\n")
     relocate(prefix)
     for component in lock["components"]:
@@ -255,6 +355,10 @@ def main():
     parser.add_argument("--destination", type=Path)
     parser.add_argument("--verify", type=Path, metavar="PREFIX")
     parser.add_argument("--fetch-only", action="store_true")
+    parser.add_argument("--cache-dir", type=Path,
+                        help="Persistent source-download cache for interrupted build retries")
+    parser.add_argument("--live-output", action="store_true",
+                        help="Forward compiler output to a parent setup progress filter")
     parser.add_argument("--jobs", type=int, default=3)
     args = parser.parse_args()
     try:
@@ -262,7 +366,7 @@ def main():
             verify(args.verify)
             print("Verified dependency inputs")
         elif args.destination and 1 <= args.jobs <= 8:
-            build(args.destination, args.jobs, args.fetch_only)
+            build(args.destination, args.jobs, args.fetch_only, args.cache_dir, args.live_output)
         else:
             parser.error("Use --verify PREFIX or --destination NEW_DIRECTORY with 1-8 jobs")
     except (ValueError, OSError, subprocess.CalledProcessError) as error:

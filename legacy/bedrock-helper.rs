@@ -7,28 +7,15 @@ mod webview;
 mod login;
 #[path = "bedrock_helper_parts/prepare_owned_game.rs"]
 mod prepare_owned_game;
+#[path = "standalone_consent.rs"]
+mod standalone_consent;
 
 fn require_proprietary_acceptance() -> Result<(), &'static str> {
     let root = match std::env::var_os("BEDROCK_HOME") {
         Some(path) => PathBuf::from(path),
         None => std::env::current_dir().map_err(|_| "The project root is unavailable.")?,
     };
-    let eula = root.join("EULA.md");
-    let metadata = std::fs::symlink_metadata(&eula)
-        .map_err(|_| "Review EULA.md and enable proprietary-component acceptance before use.")?;
-    if !metadata.file_type().is_file() {
-        return Err("EULA.md must be a regular file.");
-    }
-    let text = std::fs::read_to_string(eula).map_err(|_| "EULA.md is unreadable.")?;
-    let versions: Vec<_> = text.lines().map(str::trim)
-        .filter(|line| line.starts_with("EULA_VERSION")).collect();
-    let acceptances: Vec<_> = text.lines().map(str::trim)
-        .filter(|line| line.starts_with("PROPRIETARY_COMPONENTS_ACCEPTED")).collect();
-    if versions.len() != 1 || versions[0] != "EULA_VERSION = 1"
-        || acceptances.len() != 1 || acceptances[0] != "PROPRIETARY_COMPONENTS_ACCEPTED = true" {
-        return Err("Proprietary component use is disabled; review EULA.md and enable its current acceptance setting.");
-    }
-    Ok(())
+    standalone_consent::require_acceptance_at(&root)
 }
 
 #[tokio::main]

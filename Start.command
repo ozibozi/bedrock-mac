@@ -9,7 +9,6 @@ done
 finish() {
   code=$?
   if [ "$code" -ne 0 ] && [ -t 0 ]; then
-    printf '\nSetup stopped. Fix the issue above, then open Start.command again.\n'
     read -r -p 'Press Return to close.' answer || true
   fi
 }
@@ -30,6 +29,7 @@ if ! /usr/bin/xcode-select -p >/dev/null 2>&1; then
     printf 'Apple Command Line Tools are missing. Open Start.command to install them.\n'
     exit 1
   fi
+  printf 'Checking Apple Command Line Tools\n'
   printf 'Install Apple Command Line Tools in the window that opens.\n'
   /usr/bin/xcode-select --install || true
   read -r -p 'When installation finishes, press Return to continue.' answer
@@ -37,7 +37,7 @@ fi
 /usr/bin/xcrun --find python3 >/dev/null
 if [ "$read_only" -eq 0 ] && ! /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null; then
   /usr/bin/python3 "$ROOT/client/proprietary_consent.py" --root "$ROOT"
-  printf 'Installing Rosetta. Follow Apple’s license prompt below.\n'
+  printf 'Installing Apple Rosetta for the existing x86-64 runtime. Review Apple’s license prompt below.\n'
   /usr/sbin/softwareupdate --install-rosetta
 fi
 export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:/opt/homebrew/opt/rustup/bin:/opt/homebrew/bin:/opt/homebrew/opt/llvm/bin:/opt/homebrew/opt/bison/bin:$PATH"

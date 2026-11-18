@@ -202,6 +202,7 @@ ALLOWED_FILES = (
     "tools/export-source.py",
     "legacy/bedrock-helper.rs",
     "client/standalone-helper.rs",
+    "client/standalone-consent.rs",
     "client/standalone-xvd.rs",
     "legacy/prepare-owned-game.rs",
     "native/probes/runtime-auth-probe.c",
@@ -286,6 +287,7 @@ ALLOWED_FILES = (
     "tests/test_threading_download.py",
 
     "tests/test_start.py",
+    "tests/test_native_dependencies.py",
     "tests/test_bedrock_monitor.py",
     "tests/test_standalone_setup.py",
     "tests/test_standalone_dxmt_unix.py",

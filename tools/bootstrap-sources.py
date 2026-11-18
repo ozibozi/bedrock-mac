@@ -33,6 +33,7 @@ PROJECTS = {
 
 HELPER_INPUTS = {
     "client/standalone-helper.rs": "crates/xodus-cli/examples/standalone_helper.rs",
+    "client/standalone-consent.rs": "crates/xodus-cli/examples/standalone_consent.rs",
     "client/standalone-xvd.rs": "crates/xodus-cli/examples/standalone_xvd.rs",
     "LICENSES/XVD-GreenGamesPublicKey.rsa": "crates/xodus-cli/examples/standalone_xvd_key.rsa",
 }

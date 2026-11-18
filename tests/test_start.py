@@ -21,6 +21,9 @@ spec.loader.exec_module(start)
 
 class StartTests(unittest.TestCase):
     def setUp(self):
+        previous_reporter = start.REPORTER
+        start.REPORTER = None
+        self.addCleanup(setattr, start, 'REPORTER', previous_reporter)
         temporary = tempfile.TemporaryDirectory(prefix='bedrock start ')
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
@@ -276,6 +279,10 @@ sys.exit(start.cli())
             def game_running():
                 return False
 
+            @staticmethod
+            def wait_for_idle_prefix():
+                return None
+
         with patch.object(start, 'installed', return_value=True), \
              patch.object(start, 'module', return_value=Launcher), \
              patch.object(start.sys, 'platform', 'darwin'), \
@@ -287,6 +294,59 @@ sys.exit(start.cli())
             self.assertEqual(start.main(['--market', 'US']), 0)
         self.assertEqual(run.call_count, 1)
         self.assertEqual(run.call_args.args[0][-4:], ['play', '--', '--market', 'US'])
+
+    def test_main_initializes_setup_reporter_and_prints_log_location_once(self):
+        class Launcher:
+            @staticmethod
+            def game_running():
+                return False
+
+            @staticmethod
+            def wait_for_idle_prefix():
+                return None
+
+        with patch.object(start, 'installed', side_effect=[False, True]), \
+                patch.object(start, 'module', return_value=Launcher), \
+                patch.object(start, 'setup') as setup, patch.object(start, 'run'), \
+                patch.object(start, 'lock', return_value=contextlib.nullcontext()), \
+                patch.object(start.sys, 'platform', 'darwin'), \
+                patch.object(start.platform, 'machine', return_value='arm64'), \
+                patch.object(start.platform, 'mac_ver', return_value=('15.3', '', '')), \
+                patch.object(start.os, 'umask'), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(start.main(['--setup-only']), 0)
+        setup.assert_called_once()
+        text = output.getvalue()
+        self.assertIn('First setup builds Wine and downloads required components and your game. '
+                      'You can resume if interrupted.', text)
+        self.assertIn('Logs: ' + str(self.root / 'logs/standalone/setup'), text)
+        self.assertEqual(text.count('Logs:'), 1)
+        self.assertNotIn('Traceback', text)
+
+    def test_cli_reports_handled_setup_failure_without_traceback(self):
+        class Launcher:
+            @staticmethod
+            def game_running():
+                return False
+
+            @staticmethod
+            def wait_for_idle_prefix():
+                return None
+
+        with patch.object(start, 'installed', return_value=False), \
+                patch.object(start, 'module', return_value=Launcher), \
+                patch.object(start, 'setup', side_effect=RuntimeError('fixture setup failure')), \
+                patch.object(start, 'lock', return_value=contextlib.nullcontext()), \
+                patch.object(start.sys, 'platform', 'darwin'), \
+                patch.object(start.platform, 'machine', return_value='arm64'), \
+                patch.object(start.platform, 'mac_ver', return_value=('15.3', '', '')), \
+                patch.object(start.os, 'umask'), \
+                patch.object(start.sys, 'argv', ['Start.command']), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()) as error:
+            self.assertEqual(start.cli(), 1)
+        self.assertIn('Start: fixture setup failure', error.getvalue())
+        self.assertNotIn('Traceback', error.getvalue())
 
     def dependency_inputs(self):
         for name in ('tools/build-native-dependencies.py', 'config/native-dependencies.lock.json'):
@@ -313,7 +373,10 @@ sys.exit(start.cli())
             prefix = start.native_dependencies('/source/python', 12)
             self.assertEqual(start.native_dependencies('/source/python', 12), prefix)
         self.assertEqual(len(self.calls), 1)
-        self.assertEqual(self.calls[0][-2:], ['--jobs', '8'])
+        cache_option = self.calls[0].index('--cache-dir')
+        self.assertEqual(Path(self.calls[0][cache_option + 1]).name, 'download-cache')
+        self.assertEqual(self.calls[0][self.calls[0].index('--jobs') + 1], '8')
+        self.assertIn('--live-output', self.calls[0])
         self.assertEqual(verified, [prefix, prefix])
 
     def test_interrupted_dependency_build_is_preserved_and_retry_uses_fresh_attempt(self):
@@ -387,7 +450,11 @@ sys.exit(start.cli())
 
         bootstrap = SimpleNamespace(PROJECTS={'xodus': {'patches': ('account.patch',)}},
                                     require_build_path=unittest.mock.Mock(),
-                                    HELPER_INPUTS={'client/standalone-helper.rs': 'helper', 'client/standalone-xvd.rs': 'xvd'},
+                                    HELPER_INPUTS={
+                                        'client/standalone-helper.rs': 'helper',
+                                        'client/standalone-consent.rs': 'consent',
+                                        'client/standalone-xvd.rs': 'xvd',
+                                    },
                                     SOURCE_INPUTS=('native/file-pickers/pickers.c', 'native/file-pickers/build.sh'),
                                     bootstrap=unittest.mock.Mock())
         with patch.object(start, 'run') as run, patch.object(start, 'Steps', Steps), \
@@ -407,8 +474,126 @@ sys.exit(start.cli())
         self.assertIn('runtime/standalone/wine/file-pickers-build.json', recorded[0][4])
         helper_inputs = next(step[3] for step in recorded if step[0] == 'helper')
         self.assertIn('client/standalone-xvd.rs', helper_inputs)
+        self.assertIn('client/standalone-consent.rs', helper_inputs)
         self.assertIn('patches/account.patch', helper_inputs)
         self.assertEqual(run.call_args_list[0].args[0][-1], str(self.root / 'tools/install-build-tools.sh'))
+
+    def test_logged_stage_streams_useful_output_and_keeps_complete_log(self):
+        read_fd, write_fd = os.pipe()
+        os.write(write_fd, (
+            b'[ 42%] Building fixture target\n'
+            b'Compiling fixture crate\n'
+            b'Authorization: Bearer private-token\n'
+            b'Downloading https://example.invalid/signed?token=private\n'
+            b'ordinary noisy output\n'))
+        os.close(write_fd)
+
+        class Process:
+            pid = os.getpid()
+            stdout = os.fdopen(read_fd, 'rb', buffering=0)
+
+            @staticmethod
+            def poll():
+                return 0
+
+            @staticmethod
+            def wait(timeout=None):
+                return 0
+
+        def spawn(_command, *, cwd, stdout, stderr, start_new_session, bufsize):
+            return Process()
+
+        log = self.root / 'logs/build.log'
+        with patch.object(start.subprocess, 'Popen', side_effect=spawn), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            start.run(['build'], 'Building the Windows compatibility runtime', log)
+        text = output.getvalue()
+        self.assertIn('Applies WineGDK patches and compiles the x86-64 Wine runtime.', text)
+        self.assertIn('Build: 42% — Building fixture target', text)
+        self.assertNotIn('private-token', text)
+        self.assertNotIn('example.invalid', text)
+        self.assertNotIn('ordinary noisy output', text)
+        self.assertNotIn('tail -f', text)
+        self.assertEqual(log.read_bytes(), (
+            b'[ 42%] Building fixture target\n'
+            b'Compiling fixture crate\n'
+            b'Authorization: Bearer private-token\n'
+            b'Downloading https://example.invalid/signed?token=private\n'
+            b'ordinary noisy output\n'))
+
+    def test_terminal_reporter_renders_distinct_tasks_in_fixed_width_rows(self):
+        class TTYCapture(io.StringIO):
+            def isatty(self):
+                return True
+
+        output = TTYCapture()
+        reporter = start.SetupReporter(output, environment={'TERM': 'xterm-256color'})
+        reporter.begin('Building native source dependencies')
+        reporter.output_line(b'Compiling crate-a')
+        reporter.output_line(b'Compiling crate-b')
+        reporter.output_line(b'Downloading source archive: freetype')
+        reporter.output_line(b'################################ 42.6%')
+        reporter.progress(12)
+        rendered = output.getvalue()
+        self.assertIn('\033[1;36m', rendered)
+        self.assertIn('\033[3A', rendered)
+        frame = rendered.split('\033[3A')[-1]
+        frame = start.ANSI_ESCAPE.sub('', frame)
+        rows = [line for line in frame.splitlines() if line.strip()]
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(len({len(row) for row in rows}), 1)
+        self.assertLessEqual(len(rows[0]), 80)
+        self.assertTrue(any('crate-a' in row for row in rows))
+        self.assertTrue(any('crate-b' in row for row in rows))
+        self.assertTrue(any('freetype' in row and ' 43%' in row for row in rows))
+        self.assertNotIn('################################', frame)
+        reporter.finish('')
+
+    def test_completed_archive_event_clears_live_download_row(self):
+        class TTYCapture(io.StringIO):
+            def isatty(self):
+                return True
+
+        output = TTYCapture()
+        reporter = start.SetupReporter(output, environment={'TERM': 'xterm-256color'})
+        reporter.begin('Building native source dependencies')
+        reporter.output_line(b'Downloading source archive: freetype')
+        reporter.output_line(b'############################## 97%')
+        reporter.output_line(b'Reusing verified source archive: freetype')
+        self.assertNotIn('download:freetype', reporter.tasks)
+        reporter.progress(199)
+        self.assertNotIn('97%', output.getvalue().split('\r')[-1])
+        self.assertIn(reporter.paint('✓', '1;32') + ' Reusing verified source archive: freetype',
+                      output.getvalue())
+
+    def test_non_tty_download_updates_are_throttled_to_coarse_milestones(self):
+        output = io.StringIO()
+        reporter = start.SetupReporter(output, environment={'TERM': 'dumb'})
+        reporter.begin('Building native source dependencies')
+        reporter.output_line(b'Downloading source archive: freetype')
+        for percent in (1, 5, 24, 26, 49, 51, 74, 76, 99, 100):
+            reporter.output_line(b'#' * 40 + f' {percent}%'.encode())
+        text = output.getvalue()
+        milestones = [line for line in text.splitlines() if 'freetype:' in line and '%' in line]
+        self.assertEqual(len(milestones), 5)
+        self.assertEqual([int(line.split('%', 1)[0].rsplit(' ', 1)[-1]) for line in milestones],
+                         [1, 26, 51, 76, 100])
+        self.assertNotIn('#' * 20, text)
+
+    def test_no_color_and_opt_in_fun_facts(self):
+        class TTYCapture(io.StringIO):
+            def isatty(self):
+                return True
+
+        output = TTYCapture()
+        reporter = start.SetupReporter(output, fun_facts=True,
+                                       environment={'TERM': 'xterm-256color', 'NO_COLOR': '1'})
+        reporter.begin('Building the Windows compatibility runtime')
+        reporter.output_line(b'Compiling crate')
+        reporter.progress(12)
+        reporter.finish('Complete')
+        self.assertNotRegex(output.getvalue(), r'\x1b\[[0-9;]*m')
+        self.assertIn('Fun fact:', output.getvalue())
 
     def test_source_update_refreshes_generated_helper_before_existing_tree_verification(self):
         source = Path(__file__).resolve().parents[1]

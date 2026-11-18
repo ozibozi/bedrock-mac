@@ -65,7 +65,8 @@ for name, (url, expected) in assets.items():
         fd, temporary = tempfile.mkstemp(prefix=f'.{name}.', dir=downloads)
         os.close(fd)
         try:
-            subprocess.run(['curl', '--fail', '--location', '--retry', '3', '--silent', '--show-error',
+            print(f'Downloading graphics asset: {name}', flush=True)
+            subprocess.run(['curl', '--fail', '--location', '--retry', '3', '--progress-bar',
                             '--output', temporary, url], check=True)
             if digest(Path(temporary)) != expected:
                 raise SystemExit(f'Hash mismatch: {name}')

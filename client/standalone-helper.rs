@@ -16,6 +16,7 @@ use std::sync::Mutex;
 #[path = "../src/package.rs"] mod package;
 #[path = "../src/license.rs"] mod license;
 #[path = "standalone_xvd.rs"] mod integrity;
+#[path = "standalone_consent.rs"] mod standalone_consent;
 
 type Outcome<T> = Result<T, Box<dyn std::error::Error>>;
 const PRODUCT: &str = "9NBLGGH2JHXJ";
@@ -28,27 +29,8 @@ impl std::fmt::Display for SetupFailure {
 impl std::error::Error for SetupFailure {}
 fn failure(code: &'static str) -> Box<dyn std::error::Error> { Box::new(SetupFailure(code)) }
 
-fn proprietary_consent_text_accepted(text: &str) -> bool {
-    let versions: Vec<_> = text.lines().map(str::trim)
-        .filter(|line| line.starts_with("EULA_VERSION")).collect();
-    let acceptances: Vec<_> = text.lines().map(str::trim)
-        .filter(|line| line.starts_with("PROPRIETARY_COMPONENTS_ACCEPTED")).collect();
-    versions == ["EULA_VERSION = 1"]
-        && acceptances == ["PROPRIETARY_COMPONENTS_ACCEPTED = true"]
-}
-
 fn require_proprietary_acceptance_at(root: &Path) -> Result<(), &'static str> {
-    let path = root.join("EULA.md");
-    let metadata = std::fs::symlink_metadata(&path)
-        .map_err(|_| "Review EULA.md and enable proprietary-component acceptance before use.")?;
-    if !metadata.file_type().is_file() {
-        return Err("EULA.md must be a regular file.");
-    }
-    let text = std::fs::read_to_string(path).map_err(|_| "EULA.md is unreadable.")?;
-    if !proprietary_consent_text_accepted(&text) {
-        return Err("Proprietary component use is disabled; review EULA.md and enable its current acceptance setting.");
-    }
-    Ok(())
+    standalone_consent::require_acceptance_at(root)
 }
 
 fn require_proprietary_acceptance() -> Outcome<()> {
@@ -831,18 +813,6 @@ async fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn proprietary_components_require_current_explicit_acceptance() {
-        assert!(!proprietary_consent_text_accepted(
-            "EULA_VERSION = 1\nPROPRIETARY_COMPONENTS_ACCEPTED = false\n"));
-        assert!(proprietary_consent_text_accepted(
-            "EULA_VERSION = 1\nPROPRIETARY_COMPONENTS_ACCEPTED = true\n"));
-        assert!(!proprietary_consent_text_accepted(
-            "EULA_VERSION = 0\nPROPRIETARY_COMPONENTS_ACCEPTED = true\n"));
-        assert!(!proprietary_consent_text_accepted(
-            "EULA_VERSION = 1\nPROPRIETARY_COMPONENTS_ACCEPTED = false\nPROPRIETARY_COMPONENTS_ACCEPTED = true\n"));
-    }
 
     #[test]
     fn parent_receipt_requires_matching_process_and_resolved_executable() {

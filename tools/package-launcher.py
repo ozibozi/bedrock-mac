@@ -24,7 +24,7 @@ SOURCE_FILES = (
     'launcher/setup.py', 'launcher/BedrockLauncher.swift', 'launcher/Icon.swift',
     'tools/package-launcher.py', 'tools/build-launcher.sh', 'tools/build-dmg.py', 'tools/packaging-requirements.txt',
     'client/standalone.py', 'client/standalone-setup.py', 'client/standalone-gameinput.py',
-    'client/proprietary_consent.py', 'client/winrt.reg',
+    'client/proprietary_consent.py', 'client/standalone-consent.rs', 'client/winrt.reg',
     'client/standalone-pickers.py', 'native/file-pickers/pickers.c', 'native/file-pickers/ids.h',
     'native/file-pickers/pickers.spec', 'native/file-pickers/build.sh', 'native/file-pickers/README.md',
     'native/file-pickers/check-windows.cmd', 'native/file-pickers/provenance/build-v1.sh.txt',

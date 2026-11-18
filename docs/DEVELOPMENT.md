@@ -126,6 +126,18 @@ to Rust or shell where reasonably practical, without porting unrelated
 research tools. Any retained build-only Python must have a concrete, documented
 toolchain dependency; no such exception is established as the final design.
 
+Source setup gives one concise purpose line per stage, then streams selected
+compiler and download status into the terminal while preserving complete build
+logs under `logs/standalone/setup/`. The log directory is shown once per setup.
+Only real tool-reported progress is shown; the UI invents no percentages or
+completion estimates. Progress rows are fixed-width and keyed to reported
+tasks. Configured worker limits are not presented as active-job counts.
+Completed cache events are shown once and do not remain as live status. URLs
+and lines that look like credentials are suppressed from live output. Microsoft
+sign-in and game-session output is never streamed.
+Transparency about the work in progress is a product goal: explain the work
+concisely on screen and keep detailed behavior and limitations in these docs.
+
 ### Build paths
 
 Native dependency and Wine compilation require checkout, build, dependency
