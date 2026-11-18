@@ -9,6 +9,7 @@ These are acceptance gates, not promised dates or platform guarantees.
 | Verify the compiled party fix | The exact rebuilt WinHTTP artifact passes Minecraft party creation/leave/recreate, invite reception, party joining and friend-world joining. The temporary in-game correction and isolated regression tests are supporting evidence. |
 | Qualify a distributable app | A specific app passes first-run, update/recovery, save/restore, multiplayer and extended-session checks; corresponding source/notices, signing, notarization and downloaded-app checks are complete. |
 | Establish a macOS Windows 11 ARM path | Verify an official ARM64 Bedrock client and a maintainable VM/graphics stack, preferring OSS components where practical; preserve macOS 27 Wine unless the entire vanilla game path passes acceptance. |
+| Remove Python from the player path | Replace the frozen Python worker and player-facing setup, download, preparation, monitoring and lifecycle with Rust where feasible; demonstrate macOS 27 parity and a Python-free packaged/source player path before removing the current implementation. |
 
 The [source preview](SOURCE_PREVIEW.md) gives contributors a versioned baseline.
 [Release readiness](RELEASE.md) tracks binary gates; [compatibility](COMPATIBILITY.md)
@@ -43,6 +44,12 @@ Next gates:
 4. Require a real Apple Silicon macOS 28 test of ownership/install, native ARM
    client execution, DirectX 11 graphics, save/reopen, VM lifecycle and clean
    setup before integrating or claiming support.
+5. In parallel with a technically viable ARM client path, migrate the shipped
+   worker and player-facing operations to Rust, preserving the existing macOS
+   27 path until parity and data-preservation checks pass. Replace relevant
+   test/release tooling with Rust or shell where practical; leave unrelated
+   experiments alone. The current repository does not prove a direct
+   Python/Rust version conflict, and the EULA gate still uses Python.
 
 Until these gates pass, no VM adapter is claimed and macOS 28 support remains
 unverified. See the

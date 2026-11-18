@@ -34,6 +34,26 @@ no qualified replacement runtime or macOS 28 compatibility claim. See the
 | Packaging | Swift app, frozen Python worker, resource/native inventories and DMG | `tools/package-launcher.py`, `tools/build-dmg.py` |
 | Source setup and export | Local build/retry entry point and explicit source boundary | `tools/start.py`, `tools/bootstrap-sources.py`, `tools/export-source.py` |
 
+## Python-free migration goal
+
+The current packaged app runs a PyInstaller-frozen Python worker, so players do
+not install Python separately; source setup and development do require Python.
+The Rust 1.98.0 account helper owns sign-in, ownership checks and verified game
+acquisition, but Python still owns app setup, runtime preparation and lifecycle.
+The EULA gate is also currently implemented in Python. The repository has no
+evidence of a direct Python/Rust version conflict: Rust is pinned separately,
+while source builds, packaging and CI select multiple Python versions. Those
+separate interpreters and virtual environments can cause selection confusion,
+but a specific conflict has not been established.
+
+The migration goal is a Python-free shipped app and player-facing setup,
+download, preparation, monitoring and lifecycle path, preserving macOS 27
+behavior until equivalent Rust behavior is validated. Migrate relevant
+development, test and release scripts to Rust or shell where practical; do not
+port unrelated experiments for language purity. Retain Python in build steps
+only for a documented, unavoidable toolchain dependency. Do not claim this
+goal is met until packaging and the user-facing path no longer execute Python.
+
 The [repository map](docs/README.md#repository-map) identifies supported code,
 build tools, default-off experiments and legacy CrossOver work. Upstream trees
 under ignored `sources/` are generated from tracked pins and patches.

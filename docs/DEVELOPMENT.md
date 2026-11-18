@@ -104,6 +104,28 @@ acceptance setting never replaces the ownership check.
 The native app only checks the x86-64 probe. `Start.command` can request Apple’s
 Rosetta installer during source setup; the user handles its license prompt.
 
+### Python-free Rust migration status
+
+The bundled player does not require a separate Python installation, but its
+PyInstaller-frozen worker embeds Python. Source startup currently begins with
+Apple's Python, then selects Homebrew Python 3.13 for build/helper work; the
+packaging recipe uses a Python 3.12+ virtual environment, recommends Python
+3.14, and CI tests Python 3.12 and 3.14. The account helper uses Rust 1.98.0.
+These are separate toolchains; the repository does not establish a direct
+Python/Rust version conflict. Multiple Python selections and stale virtual
+environments can explain interpreter mismatches, but are not proof of the
+reported conflict.
+
+The firm migration target is to remove Python from the shipped app and the
+player-facing setup, download, game preparation, monitoring and lifecycle
+path. Rust already owns account and license checks; the remaining operational
+ownership has not yet been ported, and the EULA checker still runs in Python.
+Keep the macOS 27 Wine path working until a Rust replacement passes equivalent
+behavioral and data-preservation tests. Migrate relevant test/release scripts
+to Rust or shell where reasonably practical, without porting unrelated
+research tools. Any retained build-only Python must have a concrete, documented
+toolchain dependency; no such exception is established as the final design.
+
 ### Build paths
 
 Native dependency and Wine compilation require checkout, build, dependency
